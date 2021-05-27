@@ -44,9 +44,7 @@ func SetFlags(f func(f *flag.FlagSet)) {
 
 // AddCommands Add Command.
 func AddCommands(cmds ...*Command) {
-	for _, cmd := range cmds {
-		_commands = append(_commands, cmd)
-	}
+	_commands = append(_commands, cmds...)
 }
 
 // Execute func
@@ -71,7 +69,12 @@ func Execute() {
 			addFlags(&cmd.Flag)
 			cmd.Flag.Usage = func() { cmd.Usage() }
 			cmd.Flag.Parse(args[1:])
-			cmd.Run(cmd, cmd.Flag.Args())
+			err := cmd.Run(cmd, cmd.Flag.Args())
+
+			if err != nil {
+				log.Printf("cmd(%s): %v\n", cmd.Name(), err)
+			}
+
 			exit()
 			return
 		}
@@ -82,7 +85,7 @@ func Execute() {
 
 // Command struct
 type Command struct {
-	Run       func(cmd *Command, args []string)
+	Run       func(cmd *Command, args []string) error
 	Flag      flag.FlagSet
 	UsageLine string
 	Short     string
