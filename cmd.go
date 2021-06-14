@@ -203,19 +203,19 @@ func help(args []string) {
 		fatalf("usage: help command\n\nToo many arguments given.\n")
 	}
 
-	arg := args[0]
-	for _, cmd := range _commands {
-		if cmd.Name() == arg {
-			if cmd.Runnable() {
-				fmt.Fprintf(os.Stdout, "usage: %s\n", cmd.UsageLine)
-			}
+	name := args[0]
 
-			runTemplate(os.Stdout, cmd.Long, nil)
-			return
-		}
+	cmd, err := getCommand(name)
+
+	if err != nil {
+		fatalf("help(%s): %v \n", name, err)
 	}
 
-	fatalf("Unknown help topic %q. Run 'help'.\n", arg)
+	if cmd.Runnable() {
+		fmt.Fprintf(os.Stdout, "usage: %s\n", cmd.UsageLine)
+	}
+
+	runTemplate(os.Stdout, cmd.Long, nil)
 }
 
 func addFlags(f *flag.FlagSet) {
