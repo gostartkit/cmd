@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"text/template"
@@ -26,7 +27,7 @@ The commands are:
 Use "[webgo] help [command]" for more information about a command.
 `
 
-	_commands   = []*Command{}
+	_commands   = Commands{}
 	_exitMu     sync.Mutex
 	_exitStatus = 0
 	_setFlags   func(f *flag.FlagSet)
@@ -47,6 +48,21 @@ func AddCommands(cmds ...*Command) {
 	_commands = append(_commands, cmds...)
 }
 
+// getCommand get Command by name.
+func getCommand(name string) (*Command, error) {
+	if len(_commands) == 0 {
+		return nil, fmt.Errorf("no commands")
+	}
+
+	cmd := _commands.Search(name)
+
+	if cmd == nil {
+		return nil, fmt.Errorf("unknown sub command %q", name)
+	}
+
+	return cmd, nil
+}
+
 // Execute func
 func Execute() {
 	flag.Usage = usage
@@ -64,23 +80,22 @@ func Execute() {
 		return
 	}
 
-	for _, cmd := range _commands {
-		if cmd.Name() == args[0] && cmd.Runnable() {
-			addFlags(&cmd.Flag)
-			cmd.Flag.Usage = func() { cmd.Usage() }
-			cmd.Flag.Parse(args[1:])
-			err := cmd.Run(cmd, cmd.Flag.Args())
+	name := args[0]
+	cmd, err := getCommand(name)
 
-			if err != nil {
-				log.Printf("cmd(%s): %v\n", cmd.Name(), err)
-			}
-
-			exit()
-			return
-		}
+	if err != nil {
+		fatalf("cmd(%s): %v \n", name, err)
 	}
 
-	fatalf("Unknown sub command %q.\n", args[0])
+	addFlags(&cmd.Flag)
+	cmd.Flag.Usage = func() { cmd.Usage() }
+	cmd.Flag.Parse(args[1:])
+
+	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
+		logf("cmd(%s): %v\n", name, err)
+	}
+
+	exit()
 }
 
 // Command struct
@@ -111,6 +126,20 @@ func (c *Command) Usage() {
 // Runnable bool
 func (c *Command) Runnable() bool {
 	return c.Run != nil
+}
+
+type Commands []*Command
+
+// Search use binary search to find and return the smallest index *Command
+func (c *Commands) Search(name string) *Command {
+
+	i := sort.Search(len(*c), func(i int) bool { return (*c)[i].Name() >= name })
+
+	if i < len(*c) && (*c)[i].Name() == name {
+		return (*c)[i]
+	}
+
+	return nil
 }
 
 func usage() {
