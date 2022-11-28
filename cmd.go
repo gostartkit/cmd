@@ -48,8 +48,8 @@ func AddCommands(cmds ...*Command) {
 	_commands = append(_commands, cmds...)
 }
 
-// getCommand get Command by name.
-func getCommand(name string) (*Command, error) {
+// searchCommand search command by name.
+func searchCommand(name string) (*Command, error) {
 	if len(_commands) == 0 {
 		return nil, fmt.Errorf("no commands")
 	}
@@ -57,7 +57,7 @@ func getCommand(name string) (*Command, error) {
 	cmd := _commands.Search(name)
 
 	if cmd == nil {
-		return nil, fmt.Errorf("unknown sub command %q", name)
+		return nil, fmt.Errorf("unknown command %q", name)
 	}
 
 	return cmd, nil
@@ -81,7 +81,7 @@ func Execute() {
 	}
 
 	name := args[0]
-	cmd, err := getCommand(name)
+	cmd, err := searchCommand(name)
 
 	if err != nil {
 		fatalf("cmd(%s): %v \n", name, err)
@@ -205,7 +205,7 @@ func help(args []string) {
 
 	name := args[0]
 
-	cmd, err := getCommand(name)
+	cmd, err := searchCommand(name)
 
 	if err != nil {
 		fatalf("help(%s): %v \n", name, err)
