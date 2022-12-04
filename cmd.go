@@ -64,7 +64,7 @@ func searchCommand(name string) (*Command, error) {
 }
 
 // Execute func
-func Execute(force bool) {
+func Execute() {
 	flag.Usage = usage
 	flag.Parse() // catch -h argument
 	log.SetFlags(0)
@@ -91,7 +91,7 @@ func Execute(force bool) {
 	cmd.Flag.Usage = func() { cmd.Usage() }
 	cmd.Flag.Parse(args[1:])
 
-	if err := cmd.Run(cmd, cmd.Flag.Args(), force); err != nil {
+	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
 		logf("cmd(%s): %v\n", name, err)
 	}
 
@@ -100,7 +100,7 @@ func Execute(force bool) {
 
 // Command struct
 type Command struct {
-	Run       func(cmd *Command, args []string, force bool) error
+	Run       func(cmd *Command, args []string) error
 	Flag      flag.FlagSet
 	UsageLine string
 	Short     string
