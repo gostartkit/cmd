@@ -1,3 +1,3 @@
-module github.com/webpkg/cmd
+module pkg.gostartkit.com/cmd
 
 go 1.13
