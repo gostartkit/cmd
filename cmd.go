@@ -88,6 +88,11 @@ func Execute() {
 	}
 
 	addFlags(&cmd.Flag)
+
+	if cmd.SetFlags != nil {
+		cmd.SetFlags(&cmd.Flag)
+	}
+
 	cmd.Flag.Usage = func() { cmd.Usage() }
 	cmd.Flag.Parse(args[1:])
 
@@ -101,6 +106,7 @@ func Execute() {
 // Command struct
 type Command struct {
 	Run       func(cmd *Command, args []string) error
+	SetFlags  func(f *flag.FlagSet)
 	Flag      flag.FlagSet
 	UsageLine string
 	Short     string
