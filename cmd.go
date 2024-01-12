@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -16,13 +17,14 @@ import (
 )
 
 var (
-	_usageTemplate = `[webgo] is a web service base on web.go
+	_usageTemplate = `[webgo] cmd tool
+
 Usage:
-	[webgo] command [arguments]
+  [webgo] command [arguments]
 
 The commands are:
 {{range .}}{{if .Runnable}}
-	{{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
+  {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
 Use "[webgo] help [command]" for more information about a command.
 `
@@ -88,11 +90,9 @@ func Execute() {
 	}
 
 	addFlags(&cmd.Flag)
-
 	if cmd.SetFlags != nil {
 		cmd.SetFlags(&cmd.Flag)
 	}
-
 	cmd.Flag.Usage = func() { cmd.Usage() }
 	cmd.Flag.Parse(args[1:])
 
@@ -181,6 +181,9 @@ func capitalize(s string) string {
 }
 
 func runTemplate(w io.Writer, text string, data interface{}) {
+	if len(os.Args) > 0 {
+		text = strings.ReplaceAll(text, "[webgo]", filepath.Base(os.Args[0]))
+	}
 	t := template.New("top")
 	t.Funcs(template.FuncMap{
 		"trim":       strings.TrimSpace,
