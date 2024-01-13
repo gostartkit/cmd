@@ -221,7 +221,7 @@ func help(args []string) {
 	}
 
 	if cmd.Runnable() {
-		fmt.Fprintf(os.Stdout, "usage: %s\n", cmd.UsageLine)
+		fmt.Fprintf(os.Stdout, "usage: %s\n\n", cmd.UsageLine)
 	}
 
 	runTemplate(os.Stdout, cmd.Long, nil)
