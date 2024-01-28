@@ -17,14 +17,20 @@ import (
 )
 
 var (
-	_usageTemplate = `[webgo] cmd tool
+	_usageTemplate = `
+[webgo]
 
 Usage:
-  [webgo] command [arguments]
+
+  [webgo] command [-v verbose] [sub command]
 
 The commands are:
 {{range .}}{{if .Runnable}}
   {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
+
+options:
+
+  -v --verbose   make the operation more talkative
 
 Use "[webgo] help [command]" for more information about a command.
 `
