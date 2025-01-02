@@ -103,7 +103,7 @@ func Execute() {
 	cmd.Flag.Parse(args[1:])
 
 	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
-		logf("cmd(%s): %v\n", name, err)
+		fatalf("cmd(%s): %v\n", name, err)
 	}
 
 	exit()
