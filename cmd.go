@@ -43,6 +43,73 @@ Use "{{.Name}} [command] --help" for more information about a command.
 	_setFlags   func(f *flag.FlagSet)
 )
 
+// Command struct
+type Command struct {
+	Name        string
+	Aliases     []string
+	UsageLine   string
+	Short       string
+	Long        string
+	Run         func(cmd *Command, args []string) error
+	SetFlags    func(f *flag.FlagSet)
+	SubCommands Commands
+
+	flag *flag.FlagSet
+}
+
+// Usage u
+func (c *Command) Usage() {
+	fmt.Fprintf(os.Stdout, "Usage: %s\n\n", c.UsageLine)
+
+	// Display flags
+	fmt.Fprintf(os.Stdout, "Flags:\n")
+
+	c.flag.VisitAll(func(f *flag.Flag) {
+		var shorthand string
+		if f.Name == "verbose" {
+			shorthand = "-v, "
+		} else if f.Name == "help" {
+			shorthand = "-h, "
+		}
+		fmt.Fprintf(os.Stdout, "  %s--%-15s %s\n", shorthand, f.Name, f.Usage)
+	})
+
+	// Display subcommands if any
+	if len(c.SubCommands) > 0 {
+		fmt.Fprintf(os.Stdout, "\nAvailable Subcommands:\n")
+	}
+
+	for _, sub := range c.SubCommands {
+		if sub.Runnable() {
+			fmt.Fprintf(os.Stdout, "  %-15s %s\n", sub.Name, sub.Short)
+		}
+	}
+
+	fmt.Fprintf(os.Stdout, "\n")
+	if c.Long != "" {
+		runTemplate(os.Stdout, c.Long, c)
+	}
+}
+
+// Runnable bool
+func (c *Command) Runnable() bool {
+	return c.Run != nil
+}
+
+type Commands []*Command
+
+// Search use binary search to find and return the smallest index *Command
+func (c *Commands) Search(name string) *Command {
+
+	for _, cmd := range *c {
+		if cmd.Name == name || contains(cmd.Aliases, name) {
+			return cmd
+		}
+	}
+
+	return nil
+}
+
 // SetUsageTemplate set value to usageTemplate
 func SetUsageTemplate(usageTemplate string) {
 	_usageTemplate = usageTemplate
@@ -58,30 +125,9 @@ func AddCommands(cmds ...*Command) {
 	_commands = append(_commands, cmds...)
 }
 
-// findCommand recursively finds a command or subcommand
-func findCommand(cmds Commands, args []string) (*Command, []string, error) {
-	if len(args) == 0 {
-		return nil, nil, fmt.Errorf("no command provided: %w", ErrNotFound)
-	}
-
-	cmd := cmds.Search(args[0])
-
-	if cmd == nil {
-		return nil, nil, fmt.Errorf("unknown command %q: %w", args[0], ErrNotFound)
-	}
-
-	if len(args) > 1 && len(cmd.SubCommands) > 0 {
-		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
-		if err == nil {
-			return subCmd, remainingArgs, nil
-		}
-	}
-
-	return cmd, args[1:], nil
-}
-
 // Execute func
 func Execute() {
+
 	flag.Usage = usage
 	flag.Parse() // catch -h argument
 	log.SetFlags(0)
@@ -104,61 +150,51 @@ func Execute() {
 		fatalf("cmd(%s): %v \n", name, err)
 	}
 
-	addFlags(&cmd.Flag)
-
-	if cmd.SetFlags != nil {
-		cmd.SetFlags(&cmd.Flag)
+	if cmd.flag == nil {
+		cmd.flag = flag.NewFlagSet(cmd.Name, flag.ContinueOnError)
 	}
 
-	cmd.Flag.Usage = func() { cmd.Usage() }
+	addFlags(cmd.flag)
 
-	if err := cmd.Flag.Parse(remainingArgs); err != nil {
+	if cmd.SetFlags != nil {
+		cmd.SetFlags(cmd.flag)
+	}
+
+	cmd.flag.Usage = func() {
+		cmd.Usage()
+	}
+
+	if err := cmd.flag.Parse(remainingArgs); err != nil {
 		fatalf("cmd(%s): %v \n", name, err)
 	}
 
-	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
+	if err := cmd.Run(cmd, cmd.flag.Args()); err != nil {
 		fatalf("cmd(%s): %v\n", name, err)
 	}
 
 	exit()
 }
 
-// Command struct
-type Command struct {
-	Name        string
-	Aliases     []string
-	UsageLine   string
-	Short       string
-	Long        string
-	Run         func(cmd *Command, args []string) error
-	SetFlags    func(f *flag.FlagSet)
-	Flag        flag.FlagSet
-	SubCommands Commands
-}
+// findCommand recursively finds a command or subcommand
+func findCommand(cmds Commands, args []string) (*Command, []string, error) {
+	if len(args) == 0 {
+		return nil, nil, fmt.Errorf("no command provided: %w", ErrNotFound)
+	}
 
-// Usage u
-func (c *Command) Usage() {
-	help([]string{c.Name})
-	os.Exit(2)
-}
+	cmd := cmds.Search(args[0])
 
-// Runnable bool
-func (c *Command) Runnable() bool {
-	return c.Run != nil
-}
+	if cmd == nil {
+		return nil, nil, fmt.Errorf("unknown command %q: %w", args[0], ErrNotFound)
+	}
 
-type Commands []*Command
-
-// Search use binary search to find and return the smallest index *Command
-func (c *Commands) Search(name string) *Command {
-
-	for _, cmd := range *c {
-		if cmd.Name == name || contains(cmd.Aliases, name) {
-			return cmd
+	if len(args) > 1 && len(cmd.SubCommands) > 0 {
+		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
+		if err == nil {
+			return subCmd, remainingArgs, nil
 		}
 	}
 
-	return nil
+	return cmd, args[1:], nil
 }
 
 func usage() {
@@ -241,10 +277,6 @@ func help(args []string) {
 
 	if err != nil {
 		fatalf("help(%s): %v \n", name, err)
-	}
-
-	if cmd.Runnable() {
-		fmt.Fprintf(os.Stdout, "usage: %s\n\n", cmd.UsageLine)
 	}
 
 	cmd.Usage()
