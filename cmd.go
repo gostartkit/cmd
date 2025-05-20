@@ -61,18 +61,28 @@ type Command struct {
 func (c *Command) Usage() {
 	fmt.Fprintf(os.Stdout, "Usage: %s\n\n", c.UsageLine)
 
-	// Display flags
-	fmt.Fprintf(os.Stdout, "Flags:\n")
+	if c.flag != nil {
+		// Display flags
+		fmt.Fprintf(os.Stdout, "Flags:\n")
 
-	c.flag.VisitAll(func(f *flag.Flag) {
-		var shorthand string
-		if f.Name == "verbose" {
-			shorthand = "-v, "
-		} else if f.Name == "help" {
-			shorthand = "-h, "
-		}
-		fmt.Fprintf(os.Stdout, "  %s--%-15s %s\n", shorthand, f.Name, f.Usage)
-	})
+		maxLen := 0
+
+		c.flag.VisitAll(func(f *flag.Flag) {
+			nameLen := len(f.Name)
+			if nameLen > maxLen {
+				maxLen = nameLen
+			}
+		})
+
+		c.flag.VisitAll(func(f *flag.Flag) {
+
+			if len(f.Name) > 1 {
+				fmt.Fprintf(os.Stdout, "  --%-*s %s\n", maxLen+2, f.Name, f.Usage)
+			} else {
+				fmt.Fprintf(os.Stdout, "  -%-*s %s\n", maxLen+3, f.Name, f.Usage)
+			}
+		})
+	}
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
