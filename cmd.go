@@ -2,13 +2,13 @@ package cmd
 
 import (
 	"bufio"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"text/template"
@@ -17,12 +17,14 @@ import (
 )
 
 var (
+	ErrNotFound = errors.New("not found")
+
 	_usageTemplate = `
-[webgo]
+{{.Name}} - {{.Short}}
 
 Usage:
 
-  [webgo] command [-v verbose] [sub command]
+  {{.Name}} [flags] <command> [subcommand] [args]
 
 The commands are:
 {{range .}}{{if .Runnable}}
@@ -32,7 +34,7 @@ options:
 
   -v --verbose   make the operation more talkative
 
-Use "[webgo] help [command]" for more information about a command.
+Use "{{.Name}} [command] --help" for more information about a command.
 `
 
 	_commands   = Commands{}
@@ -56,19 +58,26 @@ func AddCommands(cmds ...*Command) {
 	_commands = append(_commands, cmds...)
 }
 
-// searchCommand search command by name.
-func searchCommand(name string) (*Command, error) {
-	if len(_commands) == 0 {
-		return nil, fmt.Errorf("no commands")
+// findCommand recursively finds a command or subcommand
+func findCommand(cmds Commands, args []string) (*Command, []string, error) {
+	if len(args) == 0 {
+		return nil, nil, fmt.Errorf("no command provided: %w", ErrNotFound)
 	}
 
-	cmd := _commands.Search(name)
+	cmd := cmds.Search(args[0])
 
 	if cmd == nil {
-		return nil, fmt.Errorf("unknown command %q", name)
+		return nil, nil, fmt.Errorf("unknown command %q: %w", args[0], ErrNotFound)
 	}
 
-	return cmd, nil
+	if len(args) > 1 && len(cmd.SubCommands) > 0 {
+		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
+		if err == nil {
+			return subCmd, remainingArgs, nil
+		}
+	}
+
+	return cmd, args[1:], nil
 }
 
 // Execute func
@@ -89,18 +98,23 @@ func Execute() {
 	}
 
 	name := args[0]
-	cmd, err := searchCommand(name)
+	cmd, remainingArgs, err := findCommand(_commands, args)
 
 	if err != nil {
 		fatalf("cmd(%s): %v \n", name, err)
 	}
 
 	addFlags(&cmd.Flag)
+
 	if cmd.SetFlags != nil {
 		cmd.SetFlags(&cmd.Flag)
 	}
+
 	cmd.Flag.Usage = func() { cmd.Usage() }
-	cmd.Flag.Parse(args[1:])
+
+	if err := cmd.Flag.Parse(remainingArgs); err != nil {
+		fatalf("cmd(%s): %v \n", name, err)
+	}
 
 	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
 		fatalf("cmd(%s): %v\n", name, err)
@@ -111,27 +125,20 @@ func Execute() {
 
 // Command struct
 type Command struct {
-	Run       func(cmd *Command, args []string) error
-	SetFlags  func(f *flag.FlagSet)
-	Flag      flag.FlagSet
-	UsageLine string
-	Short     string
-	Long      string
-}
-
-// Name string
-func (c *Command) Name() string {
-	name := c.UsageLine
-	i := strings.IndexRune(name, ' ')
-	if i >= 0 {
-		name = name[:i]
-	}
-	return name
+	Name        string
+	Aliases     []string
+	UsageLine   string
+	Short       string
+	Long        string
+	Run         func(cmd *Command, args []string) error
+	SetFlags    func(f *flag.FlagSet)
+	Flag        flag.FlagSet
+	SubCommands Commands
 }
 
 // Usage u
 func (c *Command) Usage() {
-	help([]string{c.Name()})
+	help([]string{c.Name})
 	os.Exit(2)
 }
 
@@ -145,10 +152,10 @@ type Commands []*Command
 // Search use binary search to find and return the smallest index *Command
 func (c *Commands) Search(name string) *Command {
 
-	i := sort.Search(len(*c), func(i int) bool { return (*c)[i].Name() >= name })
-
-	if i < len(*c) && (*c)[i].Name() == name {
-		return (*c)[i]
+	for _, cmd := range *c {
+		if cmd.Name == name || contains(cmd.Aliases, name) {
+			return cmd
+		}
 	}
 
 	return nil
@@ -188,7 +195,7 @@ func capitalize(s string) string {
 
 func runTemplate(w io.Writer, text string, data interface{}) {
 	if len(os.Args) > 0 {
-		text = strings.ReplaceAll(text, "[webgo]", filepath.Base(os.Args[0]))
+		text = strings.ReplaceAll(text, "{{.Name}}", filepath.Base(os.Args[0]))
 	}
 	t := template.New("top")
 	t.Funcs(template.FuncMap{
@@ -220,7 +227,7 @@ func help(args []string) {
 
 	name := args[0]
 
-	cmd, err := searchCommand(name)
+	cmd, _, err := findCommand(_commands, args)
 
 	if err != nil {
 		fatalf("help(%s): %v \n", name, err)
@@ -263,4 +270,14 @@ func setExitStatus(n int) {
 
 func exit() {
 	os.Exit(_exitStatus)
+}
+
+// contains checks if a string exists in a slice
+func contains(slice []string, str string) bool {
+	for _, s := range slice {
+		if s == str {
+			return true
+		}
+	}
+	return false
 }
