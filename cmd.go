@@ -188,20 +188,24 @@ func Execute() {
 // findCommand recursively finds a command or subcommand
 func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 	if len(args) == 0 {
-		return nil, nil, fmt.Errorf("no command provided: %w", ErrNotFound)
+		return nil, nil, fmt.Errorf("%w, no command provided", ErrNotFound)
 	}
 
 	cmd := cmds.Search(args[0])
 
 	if cmd == nil {
-		return nil, nil, fmt.Errorf("unknown command %q: %w", args[0], ErrNotFound)
+		return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, args[0])
 	}
 
 	if len(args) > 1 && len(cmd.SubCommands) > 0 {
+
 		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
-		if err == nil {
-			return subCmd, remainingArgs, nil
+
+		if err != nil {
+			return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, strings.Join(args[0:2], " "))
 		}
+
+		return subCmd, remainingArgs, nil
 	}
 
 	return cmd, args[1:], nil
