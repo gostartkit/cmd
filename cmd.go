@@ -28,7 +28,7 @@ Usage:
 
 Available Commands:
 {{range .Commands}}{{if .Runnable}}
-  {{.Name | printf "%-15s"}} {{.Short}}{{end}}{{end}}
+  {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
 options:
 
