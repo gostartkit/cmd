@@ -59,11 +59,15 @@ type Command struct {
 
 // Usage u
 func (c *Command) Usage() {
-	fmt.Fprintf(os.Stdout, "Usage: %s\n\n", c.UsageLine)
+	fmt.Fprintf(os.Stdout, "\nUsage: %s\n\n", c.UsageLine)
+
+	if c.Aliases != nil {
+		fmt.Fprintf(os.Stdout, "  Aliases: %s\n\n", strings.Join(c.Aliases, ", "))
+	}
 
 	if c.flag != nil {
 		// Display flags
-		fmt.Fprintf(os.Stdout, "Flags:\n")
+		fmt.Fprintf(os.Stdout, "  Flags:\n")
 
 		maxLen := 0
 
@@ -77,25 +81,37 @@ func (c *Command) Usage() {
 		c.flag.VisitAll(func(f *flag.Flag) {
 
 			if len(f.Name) > 1 {
-				fmt.Fprintf(os.Stdout, "  --%-*s %s\n", maxLen+2, f.Name, f.Usage)
+				fmt.Fprintf(os.Stdout, "    --%-*s %s\n", maxLen+2, f.Name, f.Usage)
 			} else {
-				fmt.Fprintf(os.Stdout, "  -%-*s %s\n", maxLen+3, f.Name, f.Usage)
+				fmt.Fprintf(os.Stdout, "    -%-*s %s\n", maxLen+3, f.Name, f.Usage)
 			}
 		})
 	}
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
-		fmt.Fprintf(os.Stdout, "\nAvailable Subcommands:\n")
-	}
+		fmt.Fprintf(os.Stdout, "\n  Available Subcommands:\n")
 
-	for _, sub := range c.SubCommands {
-		if sub.Runnable() {
-			fmt.Fprintf(os.Stdout, "  %-15s %s\n", sub.Name, sub.Short)
+		maxLen := 0
+
+		for _, sub := range c.SubCommands {
+			if sub.Runnable() {
+				nameLen := len(sub.Name)
+				if nameLen > maxLen {
+					maxLen = nameLen
+				}
+			}
 		}
+
+		for _, sub := range c.SubCommands {
+			if sub.Runnable() {
+				fmt.Fprintf(os.Stdout, "    %-*s %s\n", maxLen+2, sub.Name, sub.Short)
+			}
+		}
+
+		fmt.Fprintf(os.Stdout, "\n")
 	}
 
-	fmt.Fprintf(os.Stdout, "\n")
 	if c.Long != "" {
 		runTemplate(os.Stdout, c.Long, c)
 	}
