@@ -26,9 +26,9 @@ Usage:
 
   {{.Name}} [flags] <command> [subcommand] [args]
 
-The commands are:
-{{range .}}{{if .Runnable}}
-  {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
+Available Commands:
+{{range .Commands}}{{if .Runnable}}
+  {{.Name | printf "%-15s"}} {{.Short}}{{end}}{{end}}
 
 options:
 
@@ -162,13 +162,23 @@ func (c *Commands) Search(name string) *Command {
 }
 
 func usage() {
-	printUsage(os.Stderr)
+	progName := filepath.Base(os.Args[0])
+	data := struct {
+		Name     string
+		Short    string
+		Commands Commands
+	}{
+		Name:     progName,
+		Short:    "Command-line tool",
+		Commands: _commands,
+	}
+	printUsage(os.Stderr, data)
 	os.Exit(2)
 }
 
-func printUsage(w io.Writer) {
+func printUsage(w io.Writer, data interface{}) {
 	bw := bufio.NewWriter(w)
-	runTemplate(bw, _usageTemplate, _commands)
+	runTemplate(bw, _usageTemplate, data)
 	bw.Flush()
 }
 
@@ -218,11 +228,11 @@ func runTemplate(w io.Writer, text string, data interface{}) {
 
 func help(args []string) {
 	if len(args) == 0 {
-		printUsage(os.Stdout)
-		return
+		usage()
 	}
-	if len(args) != 1 {
-		fatalf("usage: help command\n\nToo many arguments given.\n")
+
+	if len(args) > 1 {
+		fatalf("Usage: help <command>\n\nToo many arguments.\n")
 	}
 
 	name := args[0]
@@ -237,7 +247,7 @@ func help(args []string) {
 		fmt.Fprintf(os.Stdout, "usage: %s\n\n", cmd.UsageLine)
 	}
 
-	runTemplate(os.Stdout, cmd.Long, nil)
+	cmd.Usage()
 }
 
 func addFlags(f *flag.FlagSet) {
