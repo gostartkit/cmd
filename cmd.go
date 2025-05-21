@@ -116,6 +116,7 @@ func (c *Command) Usage() {
 
 	if c.Long != "" {
 		runTemplate(os.Stdout, c.Long, c)
+		fmt.Fprintf(os.Stdout, "\n")
 	}
 }
 
