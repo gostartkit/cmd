@@ -59,34 +59,15 @@ type Command struct {
 
 // Usage u
 func (c *Command) Usage() {
+
 	fmt.Fprintf(os.Stdout, "\nUsage: %s\n\n", c.UsageLine)
 
 	if c.Aliases != nil {
 		fmt.Fprintf(os.Stdout, "  Aliases: %s\n\n", strings.Join(c.Aliases, ", "))
 	}
 
-	if c.flag != nil {
-		// Display flags
-		fmt.Fprintf(os.Stdout, "  Flags:\n")
-
-		maxLen := 0
-
-		c.flag.VisitAll(func(f *flag.Flag) {
-			nameLen := len(f.Name)
-			if nameLen > maxLen {
-				maxLen = nameLen
-			}
-		})
-
-		c.flag.VisitAll(func(f *flag.Flag) {
-
-			if len(f.Name) > 1 {
-				fmt.Fprintf(os.Stdout, "    --%-*s %s\n", maxLen+2, f.Name, f.Usage)
-			} else {
-				fmt.Fprintf(os.Stdout, "    -%-*s %s\n", maxLen+3, f.Name, f.Usage)
-			}
-		})
-
+	if c.Long != "" {
+		runTemplate(os.Stdout, c.Long, c)
 		fmt.Fprintf(os.Stdout, "\n")
 	}
 
@@ -114,10 +95,32 @@ func (c *Command) Usage() {
 		fmt.Fprintf(os.Stdout, "\n")
 	}
 
-	if c.Long != "" {
-		runTemplate(os.Stdout, c.Long, c)
+	if c.flag != nil {
+		// Display flags
+		fmt.Fprintf(os.Stdout, "  Flags:\n")
+
+		maxLen := 0
+
+		c.flag.VisitAll(func(f *flag.Flag) {
+			nameLen := len(f.Name)
+			if nameLen > maxLen {
+				maxLen = nameLen
+			}
+		})
+
+		c.flag.VisitAll(func(f *flag.Flag) {
+
+			if len(f.Name) > 1 {
+				fmt.Fprintf(os.Stdout, "    --%-*s %s\n", maxLen+2, f.Name, f.Usage)
+			} else {
+				fmt.Fprintf(os.Stdout, "    -%-*s %s\n", maxLen+3, f.Name, f.Usage)
+			}
+		})
+
 		fmt.Fprintf(os.Stdout, "\n")
 	}
+
+	fmt.Fprintf(os.Stdout, "\n")
 }
 
 // Runnable bool
