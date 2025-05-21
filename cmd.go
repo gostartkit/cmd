@@ -73,7 +73,7 @@ func (c *Command) Usage() {
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
-		fmt.Fprintf(os.Stdout, "  Available Subcommands:\n")
+		fmt.Fprintf(os.Stdout, "Available Subcommands:\n")
 
 		maxLen := 0
 
@@ -88,7 +88,7 @@ func (c *Command) Usage() {
 
 		for _, sub := range c.SubCommands {
 			if sub.Runnable() {
-				fmt.Fprintf(os.Stdout, "    %-*s %s\n", maxLen+2, sub.Name, sub.Short)
+				fmt.Fprintf(os.Stdout, "  %-*s %s\n", maxLen+2, sub.Name, sub.Short)
 			}
 		}
 
@@ -97,7 +97,7 @@ func (c *Command) Usage() {
 
 	if c.flag != nil {
 		// Display flags
-		fmt.Fprintf(os.Stdout, "  Flags:\n")
+		fmt.Fprintf(os.Stdout, "Flags:\n")
 
 		maxLen := 0
 
@@ -111,9 +111,9 @@ func (c *Command) Usage() {
 		c.flag.VisitAll(func(f *flag.Flag) {
 
 			if len(f.Name) > 1 {
-				fmt.Fprintf(os.Stdout, "    --%-*s %s\n", maxLen+2, f.Name, f.Usage)
+				fmt.Fprintf(os.Stdout, "  --%-*s %s\n", maxLen+2, f.Name, f.Usage)
 			} else {
-				fmt.Fprintf(os.Stdout, "    -%-*s %s\n", maxLen+3, f.Name, f.Usage)
+				fmt.Fprintf(os.Stdout, "  -%-*s %s\n", maxLen+3, f.Name, f.Usage)
 			}
 		})
 
