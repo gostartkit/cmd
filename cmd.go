@@ -217,11 +217,9 @@ func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 
 		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
 
-		if err != nil {
-			return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, strings.Join(args[0:2], " "))
+		if err == nil {
+			return subCmd, remainingArgs, nil
 		}
-
-		return subCmd, remainingArgs, nil
 	}
 
 	return cmd, args[1:], nil
