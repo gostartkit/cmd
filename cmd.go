@@ -86,11 +86,13 @@ func (c *Command) Usage() {
 				fmt.Fprintf(os.Stdout, "    -%-*s %s\n", maxLen+3, f.Name, f.Usage)
 			}
 		})
+
+		fmt.Fprintf(os.Stdout, "\n")
 	}
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
-		fmt.Fprintf(os.Stdout, "\n  Available Subcommands:\n")
+		fmt.Fprintf(os.Stdout, "  Available Subcommands:\n")
 
 		maxLen := 0
 
