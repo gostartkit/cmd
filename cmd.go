@@ -68,7 +68,7 @@ func (c *Command) Usage() {
 
 	if c.Long != "" {
 		runTemplate(os.Stdout, c.Long, c)
-		fmt.Fprintf(os.Stdout, "\n")
+		fmt.Fprintf(os.Stdout, "\n\n")
 	}
 
 	// Display subcommands if any
@@ -120,7 +120,6 @@ func (c *Command) Usage() {
 		fmt.Fprintf(os.Stdout, "\n")
 	}
 
-	fmt.Fprintf(os.Stdout, "\n")
 }
 
 // Runnable bool
