@@ -8,7 +8,7 @@ package main
 import (
 	"flag"
 
-	"github.com/webpkg/cmd"
+	"pkg.gostartkit.com/cmd"
 )
 
 var (
@@ -34,7 +34,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/webpkg/cmd"
+	"pkg.gostartkit.com/cmd"
 )
 
 var (
@@ -43,6 +43,7 @@ var (
 
 	cmdVersion = &cmd.Command{
 		Run:       runVersion,
+		Name:      "version",
 		UsageLine: "version",
 		Short:     "display version",
 		Long:      "display version and build info.\n",
