@@ -296,12 +296,9 @@ func runTemplate(w io.Writer, text string, data interface{}) {
 }
 
 func help(args []string) {
+
 	if len(args) == 0 {
 		usage()
-	}
-
-	if len(args) > 1 {
-		fatalf("Usage: help <command>\n\nToo many arguments.\n")
 	}
 
 	name := args[0]
