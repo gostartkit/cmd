@@ -1113,7 +1113,7 @@ func (f *FlagSet) parseOne() (bool, error) {
 	var flag *Flag
 	var ok bool
 
-	if numMinuses == 1 && len(name) == 1 {
+	if numMinuses == 1 {
 		// it's a shorthand flag
 		flag, ok = f.LookupShort(name)
 		if !ok {
