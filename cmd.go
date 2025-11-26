@@ -40,7 +40,7 @@ Use "{{.Name}} [command] --help" for more information about a command.
 	_commands   = Commands{}
 	_exitMu     sync.Mutex
 	_exitStatus = 0
-	_setFlags   func(f *flag.FlagSet)
+	_setFlags   func(f *FlagSet)
 )
 
 // Command struct
@@ -51,10 +51,10 @@ type Command struct {
 	Short       string
 	Long        string
 	Run         func(cmd *Command, args []string) error
-	SetFlags    func(f *flag.FlagSet)
+	SetFlags    func(f *FlagSet)
 	SubCommands Commands
 
-	flag *flag.FlagSet
+	flag *FlagSet
 }
 
 // Usage u
@@ -101,19 +101,21 @@ func (c *Command) Usage() {
 
 		maxLen := 0
 
-		c.flag.VisitAll(func(f *flag.Flag) {
+		c.flag.VisitAll(func(f *Flag) {
 			nameLen := len(f.Name)
 			if nameLen > maxLen {
 				maxLen = nameLen
 			}
 		})
 
-		c.flag.VisitAll(func(f *flag.Flag) {
+		maxLen += 2
 
-			if len(f.Name) > 1 {
-				fmt.Fprintf(os.Stdout, "  --%-*s %s\n", maxLen+2, f.Name, f.Usage)
+		c.flag.VisitAll(func(f *Flag) {
+
+			if len(f.Shorthand) > 0 {
+				fmt.Fprintf(os.Stdout, "  -%s --%-*s %s\n", f.Shorthand, maxLen, f.Name, f.Usage)
 			} else {
-				fmt.Fprintf(os.Stdout, "  -%-*s %s\n", maxLen+3, f.Name, f.Usage)
+				fmt.Fprintf(os.Stdout, "     --%-*s %s\n", maxLen, f.Name, f.Usage)
 			}
 		})
 
@@ -147,7 +149,7 @@ func SetUsageTemplate(usageTemplate string) {
 }
 
 // SetFlags set flags to all commands
-func SetFlags(f func(f *flag.FlagSet)) {
+func SetFlags(f func(f *FlagSet)) {
 	_setFlags = f
 }
 
@@ -182,7 +184,7 @@ func Execute() {
 	}
 
 	if cmd.flag == nil {
-		cmd.flag = flag.NewFlagSet(cmd.Name, flag.ContinueOnError)
+		cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	}
 
 	addFlags(cmd.flag)
@@ -312,7 +314,7 @@ func help(args []string) {
 	cmd.Usage()
 }
 
-func addFlags(f *flag.FlagSet) {
+func addFlags(f *FlagSet) {
 	if _setFlags != nil {
 		_setFlags(f)
 	}
