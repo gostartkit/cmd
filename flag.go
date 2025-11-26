@@ -340,11 +340,22 @@ func sortFlags(flags []*Flag) {
 	})
 }
 
-// searchFlags searches for a flag by name in a sorted slice of flags.
-func searchFlags(flags []*Flag, name string) (*Flag, bool) {
+// searchFlagsName searches for a flag by name in a sorted slice of flags.
+func searchFlagsName(flags []*Flag, name string) (*Flag, bool) {
 
 	for _, v := range flags {
-		if v.Name == name || v.Shorthand == name {
+		if v.Name == name {
+			return v, true
+		}
+	}
+
+	return nil, false
+}
+
+func searchFlagsShort(flags []*Flag, shorthand string) (*Flag, bool) {
+
+	for _, v := range flags {
+		if v.Shorthand == shorthand {
 			return v, true
 		}
 	}
@@ -426,13 +437,27 @@ func Visit(fn func(*Flag)) {
 
 // Lookup returns the [Flag] structure of the named flag, returning nil if none exists.
 func (f *FlagSet) Lookup(name string) (*Flag, bool) {
-	return searchFlags(f.formal, name)
+	return searchFlagsName(f.formal, name)
+}
+
+// LookupShort returns the [Flag] structure of the named shorthand flag, returning nil if none exists.
+func (f *FlagSet) LookupShort(name string) (*Flag, bool) {
+	return searchFlagsShort(f.formal, name)
 }
 
 // Lookup returns the [Flag] structure of the named command-line flag,
 // returning nil if none exists.
 func Lookup(name string) *Flag {
 	if flag, found := CommandLine.Lookup(name); found {
+		return flag
+	}
+	return nil
+}
+
+// LookupShort returns the [Flag] structure of the named shorthand command-line flag,
+// returning nil if none exists.
+func LookupShort(name string) *Flag {
+	if flag, found := CommandLine.LookupShort(name); found {
 		return flag
 	}
 	return nil
@@ -970,6 +995,10 @@ func (f *FlagSet) Var(value Value, name string, usage string, shorthand string) 
 		panic(f.sprintf("flag %q contains =", shorthand))
 	}
 
+	if len(shorthand) > 1 {
+		panic(f.sprintf("flag shorthand %q should be a single character", shorthand))
+	}
+
 	// Remember the default value as a string; it won't change.
 	flag := &Flag{
 		Name:      name,
@@ -978,8 +1007,8 @@ func (f *FlagSet) Var(value Value, name string, usage string, shorthand string) 
 		Value:     value,
 		DefValue:  value.String(),
 	}
-	_, alreadythere := f.Lookup(name)
-	if alreadythere {
+
+	if _, alreadythere := f.Lookup(name); alreadythere {
 		var msg string
 		if f.name == "" {
 			msg = f.sprintf("flag redefined: %s", name)
@@ -988,6 +1017,19 @@ func (f *FlagSet) Var(value Value, name string, usage string, shorthand string) 
 		}
 		panic(msg) // Happens only if flags are declared with identical names
 	}
+
+	if shorthand != "" {
+		if _, alreadythere := f.LookupShort(shorthand); alreadythere {
+			var msg string
+			if f.name == "" {
+				msg = f.sprintf("shorthand redefined: %s", shorthand)
+			} else {
+				msg = f.sprintf("%s shorthand redefined: %s", f.name, shorthand)
+			}
+			panic(msg) // Happens only if flags are declared with identical names
+		}
+	}
+
 	if pos := searchString(f.undef, name); pos != "" {
 		panic(fmt.Sprintf("flag %s set at %s before being defined", name, pos))
 	}
@@ -1068,13 +1110,28 @@ func (f *FlagSet) parseOne() (bool, error) {
 		}
 	}
 
-	flag, ok := f.Lookup(name)
-	if !ok {
-		if name == "help" || name == "h" { // special case for nice help message.
-			f.usage()
-			return false, ErrHelp
+	var flag *Flag
+	var ok bool
+
+	if numMinuses == 1 && len(name) == 1 {
+		// it's a shorthand flag
+		flag, ok = f.LookupShort(name)
+		if !ok {
+			if name == "h" { // special case for nice help message.
+				f.usage()
+				return false, ErrHelp
+			}
+			return false, f.failf("flag provided but not defined: -%s", name)
 		}
-		return false, f.failf("flag provided but not defined: -%s", name)
+	} else {
+		flag, ok = f.Lookup(name)
+		if !ok {
+			if name == "help" { // special case for nice help message.
+				f.usage()
+				return false, ErrHelp
+			}
+			return false, f.failf("flag provided but not defined: --%s", name)
+		}
 	}
 
 	if fv, ok := flag.Value.(boolFlag); ok && fv.IsBoolFlag() { // special case: doesn't need an arg
