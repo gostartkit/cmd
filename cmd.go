@@ -142,7 +142,13 @@ type Commands []*Command
 func (c *Commands) Search(name string) *Command {
 
 	for _, cmd := range *c {
-		if cmd.Name == name || slices.Contains(cmd.Aliases, name) {
+		if cmd.Name == name {
+			return cmd
+		}
+	}
+
+	for _, cmd := range *c {
+		if slices.Contains(cmd.Aliases, name) {
 			return cmd
 		}
 	}
