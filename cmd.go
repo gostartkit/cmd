@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"text/template"
@@ -54,7 +55,13 @@ type Command struct {
 	SetFlags    func(f *FlagSet)
 	SubCommands Commands
 
-	flag *FlagSet
+	alias string
+	flag  *FlagSet
+}
+
+// GetAlias get alias
+func (c *Command) GetAlias() string {
+	return c.alias
 }
 
 // Usage u
@@ -135,7 +142,7 @@ type Commands []*Command
 func (c *Commands) Search(name string) *Command {
 
 	for _, cmd := range *c {
-		if cmd.Name == name || contains(cmd.Aliases, name) {
+		if cmd.Name == name || slices.Contains(cmd.Aliases, name) {
 			return cmd
 		}
 	}
@@ -210,15 +217,20 @@ func Execute() {
 
 // findCommand recursively finds a command or subcommand
 func findCommand(cmds Commands, args []string) (*Command, []string, error) {
+
 	if len(args) == 0 {
 		return nil, nil, fmt.Errorf("%w, no command provided", ErrNotFound)
 	}
 
-	cmd := cmds.Search(args[0])
+	name := args[0]
+
+	cmd := cmds.Search(name)
 
 	if cmd == nil {
-		return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, args[0])
+		return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name)
 	}
+
+	cmd.alias = name
 
 	if len(args) > 1 && len(cmd.SubCommands) > 0 {
 
@@ -344,14 +356,4 @@ func setExitStatus(n int) {
 
 func exit() {
 	os.Exit(_exitStatus)
-}
-
-// contains checks if a string exists in a slice
-func contains(slice []string, str string) bool {
-	for _, s := range slice {
-		if s == str {
-			return true
-		}
-	}
-	return false
 }
