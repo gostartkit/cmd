@@ -20,7 +20,7 @@ import (
 var (
 	ErrNotFound = errors.New("not found")
 
-	_usageTemplate = `
+	defaultUsageTemplate = `
 {{.Name}} - {{.Short}}
 
 Usage:
@@ -38,10 +38,10 @@ options:
 Use "{{.Name}} [command] --help" for more information about a command.
 `
 
-	_commands   = Commands{}
-	_exitMu     sync.Mutex
-	_exitStatus = 0
-	_setFlags   func(f *FlagSet)
+	defaultCommands   = Commands{}
+	defaultExitMu     sync.Mutex
+	defaultExitStatus = 0
+	defaultSetFlags   func(f *FlagSet)
 )
 
 // Command struct
@@ -158,17 +158,17 @@ func (c *Commands) Search(name string) *Command {
 
 // SetUsageTemplate set value to usageTemplate
 func SetUsageTemplate(usageTemplate string) {
-	_usageTemplate = usageTemplate
+	defaultUsageTemplate = usageTemplate
 }
 
 // SetFlags set flags to all commands
 func SetFlags(f func(f *FlagSet)) {
-	_setFlags = f
+	defaultSetFlags = f
 }
 
 // AddCommands Add Command.
 func AddCommands(cmds ...*Command) {
-	_commands = append(_commands, cmds...)
+	defaultCommands = append(defaultCommands, cmds...)
 }
 
 // Execute func
@@ -190,7 +190,7 @@ func Execute() {
 	}
 
 	name := args[0]
-	cmd, remainingArgs, err := findCommand(_commands, args)
+	cmd, remainingArgs, err := findCommand(defaultCommands, args)
 
 	if err != nil {
 		fatalf("cmd(%s): %v \n", name, err)
@@ -259,7 +259,7 @@ func usage() {
 	}{
 		Name:     progName,
 		Short:    "Command-line tool",
-		Commands: _commands,
+		Commands: defaultCommands,
 	}
 	printUsage(os.Stderr, data)
 	os.Exit(2)
@@ -267,7 +267,7 @@ func usage() {
 
 func printUsage(w io.Writer, data interface{}) {
 	bw := bufio.NewWriter(w)
-	runTemplate(bw, _usageTemplate, data)
+	runTemplate(bw, defaultUsageTemplate, data)
 	bw.Flush()
 }
 
@@ -323,7 +323,7 @@ func help(args []string) {
 
 	name := args[0]
 
-	cmd, _, err := findCommand(_commands, args)
+	cmd, _, err := findCommand(defaultCommands, args)
 
 	if err != nil {
 		fatalf("help(%s): %v \n", name, err)
@@ -333,8 +333,8 @@ func help(args []string) {
 }
 
 func addFlags(f *FlagSet) {
-	if _setFlags != nil {
-		_setFlags(f)
+	if defaultSetFlags != nil {
+		defaultSetFlags(f)
 	}
 }
 
@@ -353,13 +353,13 @@ func fatalf(format string, args ...interface{}) {
 }
 
 func setExitStatus(n int) {
-	_exitMu.Lock()
-	if _exitStatus < n {
-		_exitStatus = n
+	defaultExitMu.Lock()
+	if defaultExitStatus < n {
+		defaultExitStatus = n
 	}
-	_exitMu.Unlock()
+	defaultExitMu.Unlock()
 }
 
 func exit() {
-	os.Exit(_exitStatus)
+	os.Exit(defaultExitStatus)
 }
