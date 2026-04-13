@@ -1,13 +1,20 @@
 # cmd
-a very simple command lib
+a very simple and modern command lib for Go
+
+### Features
+- Instance-driven (App struct) or Global state (DefaultApp)
+- context.Context support in Run
+- Recursive subcommands
+- Long and short flags
+- Command suggestions (Levenshtein distance)
+- Built-in help and usage generation
 
 ### main
 ```go
 package main
 
 import (
-	"flag"
-
+	"context"
 	"pkg.gostartkit.com/cmd"
 )
 
@@ -17,14 +24,13 @@ var (
 
 func main() {
 
-	cmd.SetFlags(func(f *flag.FlagSet) {
-		f.BoolVar(&_webForce, "force", false, "")
+	cmd.SetFlags(func(f *cmd.FlagSet) {
+		f.BoolVar(&_webForce, "force", false, "force operation", "f")
 	})
 
 	cmd.AddCommands(cmdVersion)
 	cmd.Execute()
 }
-
 ```
 
 ### cmdVersion
@@ -32,13 +38,13 @@ func main() {
 package main
 
 import (
+	"context"
 	"fmt"
-
 	"pkg.gostartkit.com/cmd"
 )
 
 var (
-	_version = "v0.0.1"
+	_version = "v1.0.0"
 	_osarch  string // set by ldflags
 
 	cmdVersion = &cmd.Command{
@@ -50,8 +56,8 @@ var (
 	}
 )
 
-func runVersion(cmd *cmd.Command, args []string) {
+func runVersion(ctx context.Context, cmd *cmd.Command, args []string) error {
 	fmt.Println(_version, _osarch)
+	return nil
 }
-
 ```

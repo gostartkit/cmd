@@ -334,44 +334,29 @@ type Flag struct {
 
 // sortFlags returns a slice of flags sorted by name.
 func sortFlags(flags []*Flag) {
-
 	slices.SortFunc(flags, func(a, b *Flag) int {
 		return strings.Compare(a.Name, b.Name)
 	})
 }
 
-// searchFlagsName searches for a flag by name in a sorted slice of flags.
-func searchFlagsName(flags []*Flag, name string) (*Flag, bool) {
-
-	for _, v := range flags {
+// searchFlagsName searches for a flag by name.
+func (f *FlagSet) Lookup(name string) (*Flag, bool) {
+	for _, v := range f.formal {
 		if v.Name == name {
 			return v, true
 		}
 	}
-
 	return nil, false
 }
 
-func searchFlagsShort(flags []*Flag, shorthand string) (*Flag, bool) {
-
-	for _, v := range flags {
+// LookupShort returns the [Flag] structure of the named shorthand flag, returning nil if none exists.
+func (f *FlagSet) LookupShort(shorthand string) (*Flag, bool) {
+	for _, v := range f.formal {
 		if v.Shorthand == shorthand {
 			return v, true
 		}
 	}
-
 	return nil, false
-}
-
-func searchString(arr []string, name string) string {
-
-	for _, v := range arr {
-		if v == name {
-			return v
-		}
-	}
-
-	return ""
 }
 
 // Output returns the destination for usage and error messages. [os.Stderr] is returned if
@@ -435,16 +420,6 @@ func Visit(fn func(*Flag)) {
 	CommandLine.Visit(fn)
 }
 
-// Lookup returns the [Flag] structure of the named flag, returning nil if none exists.
-func (f *FlagSet) Lookup(name string) (*Flag, bool) {
-	return searchFlagsName(f.formal, name)
-}
-
-// LookupShort returns the [Flag] structure of the named shorthand flag, returning nil if none exists.
-func (f *FlagSet) LookupShort(name string) (*Flag, bool) {
-	return searchFlagsShort(f.formal, name)
-}
-
 // Lookup returns the [Flag] structure of the named command-line flag,
 // returning nil if none exists.
 func Lookup(name string) *Flag {
@@ -461,6 +436,15 @@ func LookupShort(name string) *Flag {
 		return flag
 	}
 	return nil
+}
+
+func searchString(arr []string, name string) string {
+	for _, v := range arr {
+		if v == name {
+			return v
+		}
+	}
+	return ""
 }
 
 // Set sets the value of the named flag.

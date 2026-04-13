@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -38,11 +38,34 @@ options:
 Use "{{.Name}} [command] --help" for more information about a command.
 `
 
-	defaultCommands   = Commands{}
-	defaultExitMu     sync.Mutex
-	defaultExitStatus = 0
-	defaultSetFlags   func(f *FlagSet)
+	DefaultApp = NewApp(filepath.Base(os.Args[0]))
 )
+
+// App is the main application container
+type App struct {
+	Name          string
+	Short         string
+	Long          string
+	Commands      Commands
+	UsageTemplate string
+	Out           io.Writer
+	Err           io.Writer
+	SetFlags      func(f *FlagSet)
+
+	mu         sync.Mutex
+	exitStatus int
+}
+
+// NewApp creates a new App instance
+func NewApp(name string) *App {
+	return &App{
+		Name:          name,
+		Short:         "Command-line tool",
+		UsageTemplate: defaultUsageTemplate,
+		Out:           os.Stdout,
+		Err:           os.Stderr,
+	}
+}
 
 // Command struct
 type Command struct {
@@ -51,12 +74,13 @@ type Command struct {
 	UsageLine   string
 	Short       string
 	Long        string
-	Run         func(cmd *Command, args []string) error
+	Run         func(ctx context.Context, cmd *Command, args []string) error
 	SetFlags    func(f *FlagSet)
 	SubCommands Commands
 
 	alias string
 	flag  *FlagSet
+	app   *App
 }
 
 // GetAlias get alias
@@ -66,21 +90,25 @@ func (c *Command) GetAlias() string {
 
 // Usage u
 func (c *Command) Usage() {
+	out := c.app.Out
+	if out == nil {
+		out = os.Stdout
+	}
 
-	fmt.Fprintf(os.Stdout, "\nUsage: %s\n\n", c.UsageLine)
+	fmt.Fprintf(out, "\nUsage: %s\n\n", c.UsageLine)
 
 	if c.Aliases != nil {
-		fmt.Fprintf(os.Stdout, "  Aliases: %s\n\n", strings.Join(c.Aliases, ", "))
+		fmt.Fprintf(out, "  Aliases: %s\n\n", strings.Join(c.Aliases, ", "))
 	}
 
 	if c.Long != "" {
-		runTemplate(os.Stdout, c.Long, c)
-		fmt.Fprintf(os.Stdout, "\n\n")
+		runTemplate(out, c.Long, c)
+		fmt.Fprintf(out, "\n\n")
 	}
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
-		fmt.Fprintf(os.Stdout, "Available Subcommands:\n")
+		fmt.Fprintf(out, "Available Subcommands:\n")
 
 		maxLen := 0
 
@@ -95,16 +123,16 @@ func (c *Command) Usage() {
 
 		for _, sub := range c.SubCommands {
 			if sub.Runnable() {
-				fmt.Fprintf(os.Stdout, "  %-*s %s\n", maxLen+2, sub.Name, sub.Short)
+				fmt.Fprintf(out, "  %-*s %s\n", maxLen+2, sub.Name, sub.Short)
 			}
 		}
 
-		fmt.Fprintf(os.Stdout, "\n")
+		fmt.Fprintf(out, "\n")
 	}
 
 	if c.flag != nil {
 		// Display flags
-		fmt.Fprintf(os.Stdout, "Flags:\n")
+		fmt.Fprintf(out, "Flags:\n")
 
 		maxLen := 0
 
@@ -120,13 +148,13 @@ func (c *Command) Usage() {
 		c.flag.VisitAll(func(f *Flag) {
 
 			if len(f.Shorthand) > 0 {
-				fmt.Fprintf(os.Stdout, "  -%s --%-*s %s\n", f.Shorthand, maxLen, f.Name, f.Usage)
+				fmt.Fprintf(out, "  -%s --%-*s %s\n", f.Shorthand, maxLen, f.Name, f.Usage)
 			} else {
-				fmt.Fprintf(os.Stdout, "     --%-*s %s\n", maxLen, f.Name, f.Usage)
+				fmt.Fprintf(out, "     --%-*s %s\n", maxLen, f.Name, f.Usage)
 			}
 		})
 
-		fmt.Fprintf(os.Stdout, "\n")
+		fmt.Fprintf(out, "\n")
 	}
 
 }
@@ -158,49 +186,70 @@ func (c *Commands) Search(name string) *Command {
 
 // SetUsageTemplate set value to usageTemplate
 func SetUsageTemplate(usageTemplate string) {
-	defaultUsageTemplate = usageTemplate
+	DefaultApp.UsageTemplate = usageTemplate
 }
 
 // SetFlags set flags to all commands
 func SetFlags(f func(f *FlagSet)) {
-	defaultSetFlags = f
+	DefaultApp.SetFlags = f
 }
 
 // AddCommands Add Command.
 func AddCommands(cmds ...*Command) {
-	defaultCommands = append(defaultCommands, cmds...)
+	DefaultApp.Commands = append(DefaultApp.Commands, cmds...)
 }
 
 // Execute func
 func Execute() {
+	if err := DefaultApp.Run(context.Background(), os.Args[1:]); err != nil {
+		fmt.Fprintf(DefaultApp.Err, "Error: %v\n", err)
+		os.Exit(DefaultApp.exitStatus)
+	}
+	os.Exit(DefaultApp.exitStatus)
+}
 
-	flag.Usage = usage
-	flag.Parse() // catch -h argument
+// Run executes the application
+func (a *App) Run(ctx context.Context, args []string) error {
 	log.SetFlags(0)
 
-	args := flag.Args()
-
-	if len(args) < 1 {
-		usage()
+	// Preliminary check for help
+	for _, arg := range args {
+		if arg == "-h" || arg == "--help" || arg == "help" {
+			if arg == "help" && len(args) > 1 {
+				return a.help(args[1:])
+			}
+			a.Usage()
+			return nil
+		}
 	}
 
-	if args[0] == "help" {
-		help(args[1:])
-		return
+	if len(args) < 1 {
+		a.Usage()
+		a.setExitStatus(2)
+		return nil
 	}
 
 	name := args[0]
-	cmd, remainingArgs, err := findCommand(defaultCommands, args)
+	cmd, remainingArgs, err := findCommand(a.Commands, args)
 
 	if err != nil {
-		fatalf("cmd(%s): %v \n", name, err)
+		suggestions := suggestCommand(name, a.Commands)
+		if len(suggestions) > 0 {
+			return fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or "))
+		}
+		return fmt.Errorf("%w, unknown command %q", ErrNotFound, name)
 	}
+
+	cmd.app = a
 
 	if cmd.flag == nil {
 		cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	}
+	cmd.flag.SetOutput(a.Err)
 
-	addFlags(cmd.flag)
+	if a.SetFlags != nil {
+		a.SetFlags(cmd.flag)
+	}
 
 	if cmd.SetFlags != nil {
 		cmd.SetFlags(cmd.flag)
@@ -211,14 +260,54 @@ func Execute() {
 	}
 
 	if err := cmd.flag.Parse(remainingArgs); err != nil {
-		fatalf("cmd(%s): %v \n", name, err)
+		a.setExitStatus(2)
+		return err
 	}
 
-	if err := cmd.Run(cmd, cmd.flag.Args()); err != nil {
-		fatalf("cmd(%s): %v\n", name, err)
+	if err := cmd.Run(ctx, cmd, cmd.flag.Args()); err != nil {
+		a.setExitStatus(1)
+		return err
 	}
 
-	exit()
+	return nil
+}
+
+func (a *App) setExitStatus(n int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.exitStatus < n {
+		a.exitStatus = n
+	}
+}
+
+func (a *App) Usage() {
+	data := struct {
+		Name     string
+		Short    string
+		Commands Commands
+	}{
+		Name:     a.Name,
+		Short:    a.Short,
+		Commands: a.Commands,
+	}
+	bw := bufio.NewWriter(a.Err)
+	runTemplate(bw, a.UsageTemplate, data)
+	bw.Flush()
+}
+
+func (a *App) help(args []string) error {
+	if len(args) == 0 {
+		a.Usage()
+		return nil
+	}
+
+	cmd, _, err := findCommand(a.Commands, args)
+	if err != nil {
+		return err
+	}
+	cmd.app = a
+	cmd.Usage()
+	return nil
 }
 
 // findCommand recursively finds a command or subcommand
@@ -250,27 +339,6 @@ func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 	return cmd, args[1:], nil
 }
 
-func usage() {
-	progName := filepath.Base(os.Args[0])
-	data := struct {
-		Name     string
-		Short    string
-		Commands Commands
-	}{
-		Name:     progName,
-		Short:    "Command-line tool",
-		Commands: defaultCommands,
-	}
-	printUsage(os.Stderr, data)
-	os.Exit(2)
-}
-
-func printUsage(w io.Writer, data interface{}) {
-	bw := bufio.NewWriter(w)
-	runTemplate(bw, defaultUsageTemplate, data)
-	bw.Flush()
-}
-
 type errWriter struct {
 	w   io.Writer
 	err error
@@ -293,9 +361,6 @@ func capitalize(s string) string {
 }
 
 func runTemplate(w io.Writer, text string, data interface{}) {
-	if len(os.Args) > 0 {
-		text = strings.ReplaceAll(text, "{{.Name}}", filepath.Base(os.Args[0]))
-	}
 	t := template.New("top")
 	t.Funcs(template.FuncMap{
 		"trim":       strings.TrimSpace,
@@ -308,58 +373,8 @@ func runTemplate(w io.Writer, text string, data interface{}) {
 		if strings.Contains(ew.err.Error(), "pipe") {
 			os.Exit(1)
 		}
-		fatalf("writing output: %v", ew.err)
 	}
 	if err != nil {
 		panic(err)
 	}
-}
-
-func help(args []string) {
-
-	if len(args) == 0 {
-		usage()
-	}
-
-	name := args[0]
-
-	cmd, _, err := findCommand(defaultCommands, args)
-
-	if err != nil {
-		fatalf("help(%s): %v \n", name, err)
-	}
-
-	cmd.Usage()
-}
-
-func addFlags(f *FlagSet) {
-	if defaultSetFlags != nil {
-		defaultSetFlags(f)
-	}
-}
-
-func logf(format string, v ...interface{}) {
-	log.Printf(format, v...)
-}
-
-func errorf(format string, args ...interface{}) {
-	logf(format, args...)
-	setExitStatus(1)
-}
-
-func fatalf(format string, args ...interface{}) {
-	errorf(format, args...)
-	exit()
-}
-
-func setExitStatus(n int) {
-	defaultExitMu.Lock()
-	if defaultExitStatus < n {
-		defaultExitStatus = n
-	}
-	defaultExitMu.Unlock()
-}
-
-func exit() {
-	os.Exit(defaultExitStatus)
 }
