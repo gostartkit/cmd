@@ -339,6 +339,7 @@ type Flag struct {
 	Deprecated string
 	Example    string
 	Completion CompletionFunc
+	Extensions map[string]any
 }
 
 type CompletionContext struct {

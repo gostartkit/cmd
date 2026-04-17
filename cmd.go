@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 	"unicode"
 	"unicode/utf8"
 )
@@ -51,6 +52,12 @@ type App struct {
 	ConfigEnabled bool
 	ConfigLoader  ConfigLoader
 	ConfigFlag    ConfigFlagOptions
+	BeforeRun     BeforeHook
+	AfterRun      AfterHook
+	OnError       ErrorHook
+	Middlewares   []Middleware
+	Observers     []Observer
+	Extensions    map[string]any
 
 	mu         sync.Mutex
 	exitStatus int
@@ -135,6 +142,12 @@ type Command struct {
 	Positionals []PositionalArg
 	Deprecated  string
 	Hidden      bool
+	BeforeRun   BeforeHook
+	AfterRun    AfterHook
+	OnError     ErrorHook
+	Middlewares []Middleware
+	Observers   []Observer
+	Extensions  map[string]any
 	Run         func(ctx context.Context, cmd *Command, args []string) error
 	SetFlags    func(f *FlagSet)
 	SubCommands Commands
@@ -235,9 +248,9 @@ func AddCommands(cmds ...*Command) {
 func Execute() {
 	if err := DefaultApp.Run(context.Background(), os.Args[1:]); err != nil {
 		fmt.Fprintf(DefaultApp.Err, "Error: %v\n", err)
-		os.Exit(DefaultApp.exitStatus)
+		os.Exit(DefaultApp.ExitStatus())
 	}
-	os.Exit(DefaultApp.exitStatus)
+	os.Exit(DefaultApp.ExitStatus())
 }
 
 // Run executes the application
@@ -261,6 +274,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 
 	a.flag = nil
 	a.configData = nil
+	a.exitStatus = 0
 	if a.SetFlags != nil || a.configEnabled() {
 		a.flag = NewFlagSet(a.Name, ContinueOnError)
 		a.flag.SetOutput(a.Err)
@@ -272,8 +286,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	remainingArgs := args
 	if a.flag != nil {
 		if err := a.flag.ApplyEnv(); err != nil {
-			a.setExitStatus(2)
-			return err
+			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
 		}
 		var err error
 		remainingArgs, parsedAppFlags, err = a.parseAppFlags(args)
@@ -281,12 +294,10 @@ func (a *App) Run(ctx context.Context, args []string) error {
 			if errors.Is(err, ErrHelp) {
 				return nil
 			}
-			a.setExitStatus(2)
-			return err
+			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
 		}
 		if err := a.loadConfigData(); err != nil {
-			a.setExitStatus(2)
-			return err
+			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
 		}
 	}
 
@@ -302,9 +313,9 @@ func (a *App) Run(ctx context.Context, args []string) error {
 
 	if handled, err := a.runBuiltinCommand(remainingArgs); handled {
 		if err != nil {
-			a.setExitStatus(2)
+			return a.fail(nil, ctx, remainingArgs, nil, err, ErrorKindInvalidArguments, 2)
 		}
-		return err
+		return nil
 	}
 
 	name := remainingArgs[0]
@@ -313,12 +324,13 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	if err != nil {
 		suggestions := suggestCommand(name, a.Commands)
 		if len(suggestions) > 0 {
-			return fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or "))
+			return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or ")), ErrorKindNotFound, 2)
 		}
-		return fmt.Errorf("%w, unknown command %q", ErrNotFound, name)
+		return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name), ErrorKindNotFound, 2)
 	}
 
 	cmd.app = a
+	startTime := time.Now()
 
 	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	cmd.flag.SetOutput(a.Err)
@@ -329,19 +341,16 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	}
 
 	if err := cmd.flag.ApplyConfig(a.configData); err != nil {
-		a.setExitStatus(2)
-		return err
+		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	if err := cmd.flag.ApplyEnv(); err != nil {
-		a.setExitStatus(2)
-		return err
+		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	for _, parsedFlag := range parsedAppFlags {
 		if err := cmd.flag.Set(parsedFlag.Name, parsedFlag.Value); err != nil {
-			a.setExitStatus(2)
-			return err
+			return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
 		}
 	}
 
@@ -349,18 +358,15 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		if errors.Is(err, ErrHelp) {
 			return nil
 		}
-		a.setExitStatus(2)
-		return err
+		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	if err := cmd.flag.Validate(); err != nil {
-		a.setExitStatus(2)
-		return err
+		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	if err := cmd.validatePositionals(cmd.flag.Args()); err != nil {
-		a.setExitStatus(2)
-		return err
+		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	cmd.flag.WarnDeprecated()
@@ -368,11 +374,45 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		fmt.Fprintf(a.Err, "Warning: command %q is deprecated: %s\n", cmd.Name, cmd.Deprecated)
 	}
 
-	if err := cmd.Run(ctx, cmd, cmd.flag.Args()); err != nil {
-		a.setExitStatus(1)
-		return err
+	commandArgs := append([]string(nil), cmd.flag.Args()...)
+	a.emitEvent(Event{
+		Type:      EventCommandStarted,
+		Command:   cmd,
+		Args:      commandArgs,
+		StartTime: startTime,
+	})
+
+	if err := a.runBeforeHooks(ctx, cmd, cmd.flag.Args(), startTime); err != nil {
+		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindRuntime, 1)
 	}
 
+	middlewareCtx := MiddlewareContext{
+		Context:   ctx,
+		App:       a,
+		Command:   cmd,
+		Args:      commandArgs,
+		StartTime: startTime,
+	}
+	runFn := func(runCtx context.Context) error {
+		return cmd.Run(runCtx, cmd, commandArgs)
+	}
+	middlewares := append([]Middleware(nil), a.Middlewares...)
+	middlewares = append(middlewares, cmd.Middlewares...)
+
+	if err := chainMiddlewares(middlewareCtx, runFn, middlewares); err != nil {
+		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindRuntime, 1)
+	}
+
+	a.runAfterHooks(ctx, cmd, cmd.flag.Args(), startTime, nil)
+	a.emitEvent(Event{
+		Type:      EventCommandFinished,
+		Command:   cmd,
+		Args:      commandArgs,
+		StartTime: startTime,
+		EndTime:   time.Now(),
+		Duration:  time.Since(startTime),
+		ExitCode:  a.ExitStatus(),
+	})
 	return nil
 }
 
@@ -382,6 +422,12 @@ func (a *App) setExitStatus(n int) {
 	if a.exitStatus < n {
 		a.exitStatus = n
 	}
+}
+
+func (a *App) ExitStatus() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.exitStatus
 }
 
 func (a *App) Usage() {

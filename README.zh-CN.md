@@ -1,59 +1,59 @@
 # cmd
 
-English | [简体中文](./README.zh-CN.md)
+[English](./README.md) | 简体中文
 
-`cmd` is a modern command-line library for Go. It keeps a small API surface, but adds the capabilities usually needed by production-grade CLIs:
+`cmd` 是一个面向 Go 的现代命令行库。它保留了轻量的 API 形态，同时补齐了产品级 CLI 常用能力：
 
-- Recursive command trees
-- Global flags and command-local flags
-- Positional argument schema
-- Multi-source binding with `env / config / CLI / default`
-- Shell completion
-- Machine-readable `spec`
-- Markdown and man page generation
-- Hooks, middleware, and observers
-- Unified CLI errors and exit codes
+- 子命令与递归命令树
+- 全局参数与命令参数
+- 位置参数 schema
+- `env / config / CLI / default` 多来源绑定
+- shell completion
+- 机器可读 `spec`
+- Markdown / man 文档生成
+- hooks / middleware / observer
+- 统一错误类型与退出码
 
-This document is organized from quick start to platform-style integration.
+这份文档按“从快速开始到平台化集成”的顺序组织，覆盖当前库的主要使用方式。
 
-## Table of Contents
+## 目录
 
-1. [Installation](#installation)
-2. [Quick Start](#quick-start)
-3. [Two Usage Modes](#two-usage-modes)
-4. [Command Model](#command-model)
-5. [Flag Model](#flag-model)
-6. [Parsing Rules](#parsing-rules)
-7. [Help and Built-in Commands](#help-and-built-in-commands)
-8. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
-9. [Positional Arguments](#positional-arguments)
-10. [Completion](#completion)
-11. [Machine-readable Spec](#machine-readable-spec)
-12. [Docs Generation](#docs-generation)
-13. [Lifecycle Hooks](#lifecycle-hooks)
-14. [Middleware](#middleware)
-15. [Observers and Telemetry](#observers-and-telemetry)
-16. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
-17. [Custom Extension Metadata](#custom-extension-metadata)
-18. [Common Patterns](#common-patterns)
-19. [API Quick Reference](#api-quick-reference)
+1. [安装](#安装)
+2. [快速开始](#快速开始)
+3. [两种使用模式](#两种使用模式)
+4. [命令模型](#命令模型)
+5. [参数模型](#参数模型)
+6. [解析规则](#解析规则)
+7. [帮助与内建命令](#帮助与内建命令)
+8. [配置、环境变量与优先级](#配置环境变量与优先级)
+9. [位置参数](#位置参数)
+10. [completion](#completion)
+11. [机器可读 spec](#机器可读-spec)
+12. [文档生成 docs](#文档生成-docs)
+13. [生命周期 hooks](#生命周期-hooks)
+14. [middleware](#middleware)
+15. [observer 与 telemetry](#observer-与-telemetry)
+16. [统一错误与退出码](#统一错误与退出码)
+17. [自定义扩展 metadata](#自定义扩展-metadata)
+18. [常见模式](#常见模式)
+19. [API 速查](#api-速查)
 
-## Installation
+## 安装
 
-Import the package using your actual module path. In this repository, the package path is:
+按你的项目实际 module 路径引入。例如当前仓库中的包路径是：
 
 ```go
 import "pkg.gostartkit.com/cmd"
 ```
 
-## Quick Start
+## 快速开始
 
-This minimal example includes:
+下面是一个最小可运行示例，包含：
 
-- A global flag `--verbose`
-- A `version` command
-- A `hello` command
-- Command-local flags, positional arguments, and env binding
+- 一个全局参数 `--verbose`
+- 一个子命令 `version`
+- 一个子命令 `hello`
+- 命令级 flag、位置参数、env 绑定
 
 ```go
 package main
@@ -118,7 +118,7 @@ func main() {
 }
 ```
 
-Example invocations:
+可以直接使用这些命令：
 
 ```bash
 app version
@@ -127,13 +127,13 @@ APP_NAME=sara app hello user
 app hello team -n tom
 ```
 
-## Two Usage Modes
+## 两种使用模式
 
-The library supports two styles.
+这个库支持两种风格。
 
-### 1. Global default instance: `DefaultApp`
+### 1. 全局默认实例 `DefaultApp`
 
-This is the simplest approach for a single binary:
+适合单二进制、主程序入口直接使用：
 
 ```go
 cmd.SetFlags(...)
@@ -141,21 +141,21 @@ cmd.AddCommands(...)
 cmd.Execute()
 ```
 
-Global entry points:
+对应的全局入口有：
 
 - `SetFlags`
 - `AddCommands`
 - `SetUsageTemplate`
 - `Execute`
 
-### 2. Explicit instance: `App`
+### 2. 显式实例 `App`
 
-Use this when you need:
+适合：
 
-- Multiple CLI instances
-- Tests
-- Embedded execution
-- Framework or platform wrappers
+- 多个 CLI 实例并存
+- 测试
+- 嵌入式调用
+- 框架/平台层封装
 
 ```go
 app := cmd.NewApp("myapp")
@@ -168,27 +168,27 @@ if err != nil {
 }
 ```
 
-## Command Model
+## 命令模型
 
-The core types are `App` and `Command`.
+核心类型是 `App` 和 `Command`。
 
 ### App
 
-`App` represents the entire CLI application. Common fields:
+`App` 表示整个 CLI 应用，常用字段包括：
 
-- `Name`: application name
-- `Short`: short description
-- `Long`: long description
-- `Commands`: top-level commands
-- `SetFlags`: register global flags
-- `BeforeRun / AfterRun / OnError`: lifecycle hooks
-- `Middlewares`: middleware chain
-- `Observers`: event observers
-- `Extensions`: custom metadata
+- `Name`: 应用名
+- `Short`: 简短说明
+- `Long`: 长说明
+- `Commands`: 顶层命令列表
+- `SetFlags`: 配置全局 flag
+- `BeforeRun / AfterRun / OnError`: 生命周期 hook
+- `Middlewares`: 中间件
+- `Observers`: 事件观察者
+- `Extensions`: 自定义元数据
 
 ### Command
 
-`Command` represents a node in the command tree. Common fields:
+`Command` 表示一个命令节点，支持子命令树。常用字段包括：
 
 - `Name`
 - `Aliases`
@@ -207,7 +207,7 @@ The core types are `App` and `Command`.
 - `Observers`
 - `Extensions`
 
-### Defining Subcommands
+### 定义子命令
 
 ```go
 cmdAdmin := &cmd.Command{
@@ -227,15 +227,15 @@ cmdAdmin := &cmd.Command{
 }
 ```
 
-## Flag Model
+## 参数模型
 
-Flags are managed through `FlagSet`. The library supports:
+参数由 `FlagSet` 管理。这个库既支持：
 
-- Global flags
-- Command-local flags
-- Positional arguments
+- 全局参数
+- 命令级参数
+- 位置参数
 
-### Defining Flags
+### 定义 flag
 
 ```go
 var (
@@ -249,7 +249,7 @@ f.IntVar(&count, "count", 1, "retry count", "c")
 f.StringVar(&format, "format", "text", "output format", "")
 ```
 
-Supported value types include:
+支持的类型包括：
 
 - `BoolVar`
 - `IntVar`
@@ -263,11 +263,11 @@ Supported value types include:
 - `Func`
 - `BoolFunc`
 
-There are also global versions of the same helpers operating on the default `CommandLine`.
+也提供全局版同名函数，作用于默认 `CommandLine`。
 
-### Flag Metadata
+### flag 元数据
 
-After defining a flag, you can attach metadata:
+你可以在定义后继续声明元数据：
 
 ```go
 f.StringVar(&format, "format", "text", "output format", "")
@@ -281,26 +281,26 @@ f.SetCategory("format", "Output")
 f.SetExample("format", "json")
 ```
 
-These metadata fields affect:
+这些元数据会同时影响：
 
-- Parsing and validation
-- Help output
-- Completion
+- 解析与校验
+- 帮助输出
+- completion
 - `spec`
 - `docs`
 
-## Parsing Rules
+## 解析规则
 
-The parsing behavior is one of the main features of the library.
+当前解析行为是库的一个重要特性。
 
-### 1. Global flags are allowed before the command
+### 1. 支持全局 flag 在命令前
 
 ```bash
 app --verbose version
 app --config app.json hello
 ```
 
-### 2. Command flags and positional arguments may be interspersed
+### 2. 支持命令参数和位置参数交错
 
 ```bash
 app hello team -n sam
@@ -308,15 +308,15 @@ app hello team --name sam
 app hello team extra --name sam
 ```
 
-In other words, command flags do not need to appear before all positional arguments.
+也就是说，命令参数不要求必须全部写在位置参数前面。
 
-### 3. `--` stops flag parsing
+### 3. `--` 之后停止解析 flag
 
 ```bash
 app hello -- --name-not-a-flag
 ```
 
-### 4. `help` routes according to command context
+### 4. `help` 会按命令上下文路由
 
 ```bash
 app help hello
@@ -324,27 +324,27 @@ app --verbose help hello
 app hello --help
 ```
 
-### 5. Typos get suggestions
+### 5. 拼写建议
 
-The library suggests close matches for unknown commands and flags:
+对于未知命令和未知参数，库会提供建议，例如：
 
 - `statu` -> `status`
 - `--verboes` -> `--verbose`
 
-## Help and Built-in Commands
+## 帮助与内建命令
 
-Built-ins:
+内建命令包括：
 
 - `help`
 - `completion`
 - `spec`
 - `docs`
 
-If you define a user command with the same name, the user command wins and the built-in is skipped.
+如果你自己定义了同名命令，则用户命令优先，内建命令会让位。
 
-### Custom Usage Template
+### 自定义 Usage 模板
 
-If you use the default global instance, you can replace the default usage template:
+如果你使用默认全局实例，可以改默认 usage 模板：
 
 ```go
 cmd.SetUsageTemplate(`
@@ -355,22 +355,22 @@ Usage:
 `)
 ```
 
-## Config, Environment Variables, and Precedence
+## 配置、环境变量与优先级
 
-### Enable JSON Config Support
+### 开启 JSON 配置支持
 
 ```go
 app := cmd.NewApp("app")
 app.EnableConfigSupport()
 ```
 
-Once enabled, the library injects a built-in global flag:
+启用后，库会自动注入内建全局参数：
 
 ```bash
 app --config app.json hello
 ```
 
-The default loader expects JSON:
+默认配置文件加载器是 JSON：
 
 ```json
 {
@@ -381,27 +381,27 @@ The default loader expects JSON:
 }
 ```
 
-### Bind an env var
+### 绑定 env
 
 ```go
 f.StringVar(&name, "name", "", "target name", "n")
 f.BindEnv("name", "APP_NAME", "LEGACY_NAME")
 ```
 
-### Bind a config key
+### 绑定 config key
 
 ```go
 f.StringVar(&format, "format", "", "output format", "")
 f.BindConfig("format", "output.format")
 ```
 
-### Precedence
+### 优先级
 
-The precedence is fixed:
+当前优先级固定为：
 
 `CLI flag > env > config > default`
 
-Examples:
+例如：
 
 ```bash
 app --config app.json hello
@@ -409,20 +409,20 @@ APP_NAME=sam app --config app.json hello
 app --config app.json hello --name cli
 ```
 
-### Custom Config Entry Points
+### 自定义配置入口
 
-You can also override:
+你也可以覆盖：
 
 - `ConfigLoader`
 - `ConfigFlag`
 
-For example, to plug in your own config loader.
+例如替换成自己的加载逻辑。
 
-## Positional Arguments
+## 位置参数
 
-Positional arguments are described through `Command.Positionals`.
+位置参数由 `Command.Positionals` 描述。
 
-### Basic Usage
+### 基本用法
 
 ```go
 cmdDeploy := &cmd.Command{
@@ -445,7 +445,7 @@ cmdDeploy := &cmd.Command{
 }
 ```
 
-### Variadic positional arguments
+### variadic 参数
 
 ```go
 Positionals: []cmd.PositionalArg{
@@ -453,9 +453,9 @@ Positionals: []cmd.PositionalArg{
 }
 ```
 
-### Completion
+### completion
 
-Positional arguments also support:
+位置参数也支持：
 
 - `Enum`
 - `Completion`
@@ -472,17 +472,17 @@ Positionals: []cmd.PositionalArg{
 }
 ```
 
-### Validation
+### 校验
 
-The library automatically handles:
+库会自动处理：
 
-- Missing required positional arguments
-- Extra arguments for non-variadic commands
-- Enum validation
+- 缺少必填位置参数
+- 非 variadic 命令的多余参数
+- enum 值校验
 
-## Completion
+## completion
 
-### Generate shell scripts
+### 为 shell 生成脚本
 
 ```bash
 app completion bash > /etc/bash_completion.d/app
@@ -491,19 +491,19 @@ app completion fish > ~/.config/fish/completions/app.fish
 app completion powershell > app.ps1
 ```
 
-### What completion supports
+### completion 支持的内容
 
-- Command names
-- Command aliases
-- Global flags
-- Command-local flags
-- Flag enum values
-- Flag dynamic completion
-- Positional enum values
-- Positional dynamic completion
-- Built-in commands and their arguments
+- 命令名
+- 命令别名
+- 全局 flag
+- 命令 flag
+- flag enum 值
+- flag 动态 completion
+- 位置参数 enum 值
+- 位置参数动态 completion
+- 内建命令及其参数
 
-Example:
+例如：
 
 ```go
 f.StringVar(&format, "format", "", "output format", "f")
@@ -515,47 +515,49 @@ f.SetCompletion("name", func(ctx cmd.CompletionContext) []string {
 })
 ```
 
-Built-ins also have completion:
+内建命令本身也有补全：
 
 - `app completion <shell>`
 - `app spec json`
 - `app docs markdown`
 - `app docs man`
 
-## Machine-readable Spec
+## 机器可读 spec
 
-### Output
+### 输出
 
 ```bash
 app spec
 app spec json
 ```
 
-### What `spec` includes
+### `spec` 包含的内容
 
-`spec` is a versioned contract for the current command tree. It is suitable for:
+`spec` 是当前命令树的版本化契约，适合：
 
-- Static site generation
-- IDE integration
-- Console UIs
-- Agent and AI pipelines
-- Automated tests
+- 静态站点生成
+- IDE 集成
+- 控制台 UI
+- agent / AI 工具链
+- 自动化测试
 
-Current output includes:
+当前导出包括：
 
 - `schema_version`
 - `builtins`
 - `capabilities`
 - `config`
-- App and command hooks
-- Middleware and observer markers
-- Global flags
-- The command tree
-- Positionals
-- Flags
+- app / command hooks 信息
+- middleware / observer 标记
+- global flags
+- command tree
+- positionals
+- flags
 - `extensions`
 
-### Important fields in `FlagSpec` and `PositionalSpec`
+### flag / positional 中的关键信息
+
+`FlagSpec` 和 `PositionalSpec` 还会带上：
 
 - `enum`
 - `required`
@@ -564,13 +566,13 @@ Current output includes:
 - `source_order`
 - `extensions`
 
-### Example
+### 示例
 
 ```bash
 app spec json > spec.json
 ```
 
-Example fields:
+示例字段：
 
 ```json
 {
@@ -585,25 +587,25 @@ Example fields:
 }
 ```
 
-## Docs Generation
+## 文档生成 docs
 
-`docs` is generated from `Spec()`, so it shares the same command contract used by `spec`, completion, and help output.
+`docs` 基于 `Spec()` 生成文档，因此和 `spec`、completion、帮助输出共享同一份命令模型。
 
-### Single-page output
+### 单页输出
 
 ```bash
 app docs markdown
 app docs man
 ```
 
-### Multi-file export
+### 多文件导出
 
 ```bash
 app docs markdown ./docs
 app docs man ./manpages
 ```
 
-### Export layout
+### 导出结果
 
 #### Markdown bundle
 
@@ -611,7 +613,7 @@ app docs man ./manpages
 - `commands/<command>.md`
 - `commands/<command>/<subcommand>.md`
 
-#### Man bundle
+#### man bundle
 
 - `<app>.1`
 - `<app>-<command>.1`
@@ -619,13 +621,13 @@ app docs man ./manpages
 
 ### Markdown frontmatter
 
-Markdown docs include frontmatter automatically, which is useful for:
+Markdown 文档会自动带 frontmatter，适合：
 
-- Hugo, Docusaurus, Astro, MkDocs, and similar site generators
-- Search indexers
-- Content pipelines
+- Hugo / Docusaurus / Astro / MkDocs 这类站点工具
+- 搜索索引器
+- 内容流水线
 
-Frontmatter includes:
+frontmatter 中会写入：
 
 - `kind`
 - `title`
@@ -634,11 +636,11 @@ Frontmatter includes:
 - `command_path`
 - `extensions`
 
-## Lifecycle Hooks
+## 生命周期 hooks
 
-Hooks are best for execution lifecycle behavior, not wrapping-style cross-cutting control.
+hooks 适合做执行前后控制，而不是包装式横切逻辑。
 
-### App-level hooks
+### App 级 hook
 
 ```go
 app.BeforeRun = func(ctx cmd.HookContext) error {
@@ -659,7 +661,7 @@ app.OnError = func(ctx cmd.HookContext) {
 }
 ```
 
-### Command-level hooks
+### Command 级 hook
 
 ```go
 cmdDeploy := &cmd.Command{
@@ -673,37 +675,37 @@ cmdDeploy := &cmd.Command{
 }
 ```
 
-### Invocation order
+### 调用顺序
 
-On success:
+成功时：
 
-1. App `BeforeRun`
-2. Command `BeforeRun`
+1. app `BeforeRun`
+2. command `BeforeRun`
 3. `Run`
-4. Command `AfterRun`
-5. App `AfterRun`
+4. command `AfterRun`
+5. app `AfterRun`
 
-On failure:
+失败时：
 
-1. App `BeforeRun`
-2. Command `BeforeRun`
-3. `Run` or a hook returns an error
-4. Command `OnError`
-5. App `OnError`
-6. Command `AfterRun`
-7. App `AfterRun`
+1. app `BeforeRun`
+2. command `BeforeRun`
+3. `Run` 或 hook 返回错误
+4. command `OnError`
+5. app `OnError`
+6. command `AfterRun`
+7. app `AfterRun`
 
-## Middleware
+## middleware
 
-Middleware is for cross-cutting behavior such as:
+middleware 适合横切逻辑，例如：
 
-- Authentication
-- Tracing
-- Rate limiting
-- Auditing
-- Unified logging
+- 鉴权
+- tracing
+- 限流
+- 审计
+- 统一日志
 
-### App-level middleware
+### App 级 middleware
 
 ```go
 app.Use(func(ctx cmd.MiddlewareContext, next cmd.NextFunc) error {
@@ -714,7 +716,7 @@ app.Use(func(ctx cmd.MiddlewareContext, next cmd.NextFunc) error {
 })
 ```
 
-### Command-level middleware
+### Command 级 middleware
 
 ```go
 cmdDeploy := &cmd.Command{
@@ -731,22 +733,22 @@ cmdDeploy := &cmd.Command{
 }
 ```
 
-### Wrapping order
+### 包裹顺序
 
-Execution order is:
+执行顺序是：
 
 `app middleware -> command middleware -> Command.Run`
 
-## Observers and Telemetry
+## observer 与 telemetry
 
-Observers provide a stable event stream for:
+observer 提供稳定的事件流，适合接：
 
-- Metrics
-- Tracing adapters
-- Event logs
-- Analytics
+- metrics
+- tracing adapter
+- event log
+- analytics
 
-### Register an observer
+### 注册 observer
 
 ```go
 app.AddObserver(cmd.ObserverFunc(func(event cmd.Event) {
@@ -760,17 +762,17 @@ app.AddObserver(cmd.ObserverFunc(func(event cmd.Event) {
 }))
 ```
 
-Commands can also register their own `Observers`.
+命令自身也可以挂 `Observers`。
 
-### Current event types
+### 当前事件类型
 
 - `command_started`
 - `command_finished`
 - `command_failed`
 
-### Event fields
+### 事件字段
 
-`Event` includes:
+`Event` 包含：
 
 - `Type`
 - `App`
@@ -782,13 +784,13 @@ Commands can also register their own `Observers`.
 - `Duration`
 - `ExitCode`
 
-## Unified Errors and Exit Codes
+## 统一错误与退出码
 
-Library-generated normalized errors are returned as `*CLIError`.
+库内部归一化错误会返回 `*CLIError`。
 
-### Error kinds
+### 错误类型
 
-Current `Kind` values:
+当前 `Kind` 包括：
 
 - `invalid_arguments`
 - `not_found`
@@ -796,15 +798,15 @@ Current `Kind` values:
 - `internal`
 - `runtime`
 
-### Exit codes
+### 退出码
 
-- Invalid arguments: `2`
-- Unknown command: `2`
-- `context.Canceled`: `130`
-- `context.DeadlineExceeded`: `124`
-- Runtime failure: `1`
+- 参数错误：`2`
+- 未知命令：`2`
+- `context.Canceled`：`130`
+- `context.DeadlineExceeded`：`124`
+- 运行期错误：`1`
 
-### Example
+### 示例
 
 ```go
 err := app.Run(ctx, os.Args[1:])
@@ -816,39 +818,39 @@ if err != nil {
 }
 ```
 
-`Execute()` automatically exits using `ExitStatus()` on the default instance.
+`Execute()` 会在默认实例上自动按 `ExitStatus()` 退出。
 
-## Custom Extension Metadata
+## 自定义扩展 metadata
 
-If you need to attach custom metadata to the command tree, for example:
+如果你需要给命令树挂自定义信息，例如：
 
-- Site categorization
-- Console UI hints
-- Internal ownership
-- Feature flags
-- OpenAPI or agent-specific extension fields
+- 站点分类
+- 控制台 UI 提示
+- 内部 owner
+- feature flag
+- OpenAPI / agent 扩展字段
 
-use `extensions`.
+可以使用 `extensions`。
 
-### App-level
+### App 级
 
 ```go
 app.SetExtension("x-site-section", "cli")
 ```
 
-### Command-level
+### Command 级
 
 ```go
 cmdDeploy.SetExtension("x-owner", "platform")
 ```
 
-### Positional-level
+### Positional 级
 
 ```go
 cmdDeploy.Positionals[0].SetExtension("x-label", "Environment")
 ```
 
-### Flag-level
+### Flag 级
 
 ```go
 cmdDeploy.SetFlags = func(f *cmd.FlagSet) {
@@ -857,14 +859,14 @@ cmdDeploy.SetFlags = func(f *cmd.FlagSet) {
 }
 ```
 
-These metadata fields are exported into:
+这些字段会进入：
 
 - `spec`
 - Markdown frontmatter
 
-## Common Patterns
+## 常见模式
 
-### 1. Global config plus command-local flags
+### 1. 全局配置 + 命令参数
 
 ```go
 app := cmd.NewApp("app")
@@ -888,14 +890,14 @@ app.Commands = []*cmd.Command{
 }
 ```
 
-### 2. Use enums for both validation and completion
+### 2. 用 enum 驱动 completion 和校验
 
 ```go
 f.StringVar(&env, "env", "", "target environment", "")
 f.SetEnum("env", "dev", "staging", "prod")
 ```
 
-### 3. Use observers for metrics
+### 3. 用 observer 接 metrics
 
 ```go
 app.AddObserver(cmd.ObserverFunc(func(event cmd.Event) {
@@ -908,16 +910,16 @@ app.AddObserver(cmd.ObserverFunc(func(event cmd.Event) {
 }))
 ```
 
-### 4. Use `docs` and `spec` to drive docs sites and consoles
+### 4. 用 docs/spec 驱动站点和控制台
 
 ```bash
 app spec json > site/spec.json
 app docs markdown ./site/docs
 ```
 
-## API Quick Reference
+## API 速查
 
-### Application and commands
+### 应用与命令
 
 - `NewApp(name string) *App`
 - `(*App).Run(ctx, args)`
@@ -927,14 +929,14 @@ app docs markdown ./site/docs
 - `(*App).SetExtension(key, value)`
 - `(*App).Spec()`
 
-### Default instance
+### 默认实例
 
 - `SetFlags(...)`
 - `AddCommands(...)`
 - `SetUsageTemplate(...)`
 - `Execute()`
 
-### FlagSet metadata helpers
+### FlagSet 元数据
 
 - `BindEnv`
 - `BindConfig`
@@ -947,7 +949,7 @@ app docs markdown ./site/docs
 - `SetExample`
 - `SetExtension`
 
-### Important types
+### 相关类型
 
 - `App`
 - `Command`
@@ -961,19 +963,21 @@ app docs markdown ./site/docs
 - `CLIError`
 - `AppSpec`
 
-## Summary
+## 总结
 
-If you only need a small CLI, these are enough:
+如果你的目标只是做一个简单 CLI，使用：
 
 - `SetFlags`
 - `AddCommands`
 - `Execute`
 
-If you want a CLI that can grow into a platform, organize around this model:
+就足够了。
 
-- `Command / Flag / Positional` as the single command model
-- `env / config / CLI` as the single source-of-truth for configuration resolution
-- `hooks / middleware / observer` as the runtime extension layer
-- `spec / docs` as the external contract
+如果你的目标是做一个可以长期演进、能接 completion、文档、站点、控制台和 agent 的 CLI 平台，那么建议直接围绕下面这条链路组织：
 
-That is the direction this library is best suited for today.
+- `Command / Flag / Positional` 作为统一命令模型
+- `env / config / CLI` 作为统一配置来源
+- `hooks / middleware / observer` 作为统一运行时扩展点
+- `spec / docs` 作为统一外部契约
+
+这也是这个库当前最适合的使用方式。

@@ -14,6 +14,7 @@ type PositionalArg struct {
 	Enum       []string
 	Example    string
 	Completion CompletionFunc
+	Extensions map[string]any
 }
 
 func (c *Command) positionalArgForIndex(index int) *PositionalArg {

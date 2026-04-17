@@ -26,6 +26,11 @@ func (a *App) runBuiltinCommand(args []string) (bool, error) {
 			return false, nil
 		}
 		return true, a.runSpec(args[1:])
+	case "docs":
+		if a.Commands.Search("docs") != nil {
+			return false, nil
+		}
+		return true, a.runDocs(args[1:])
 	case "__complete":
 		if a.Commands.Search("__complete") != nil {
 			return false, nil
@@ -125,6 +130,12 @@ func (a *App) complete(args []string) []string {
 		currentCommands = cmd.SubCommands
 	}
 
+	if currentCommand == nil {
+		if suggestions, handled := a.completeBuiltin(positionalArgs, current); handled {
+			return suggestions
+		}
+	}
+
 	if expectingValue != nil {
 		return valueCompletions(a, currentCommand, expectingValue, positionalArgs, current, "")
 	}
@@ -132,6 +143,9 @@ func (a *App) complete(args []string) []string {
 	suggestions := make([]string, 0)
 	if current == "" {
 		suggestions = append(suggestions, commandCompletions(currentCommands)...)
+		if currentCommand == nil {
+			suggestions = append(suggestions, a.builtinSpecs()...)
+		}
 		suggestions = append(suggestions, flagCompletions(currentFlags)...)
 		if currentCommand != nil {
 			suggestions = append(suggestions, positionalValueCompletions(a, currentCommand, currentCommand.positionalArgForIndex(len(positionalArgs)), positionalArgs, "")...)
@@ -151,10 +165,40 @@ func (a *App) complete(args []string) []string {
 	}
 
 	commandSuggestions := filterPrefix(commandCompletions(currentCommands), current)
+	if currentCommand == nil {
+		commandSuggestions = append(commandSuggestions, filterPrefix(a.builtinSpecs(), current)...)
+		commandSuggestions = uniqueSortedStrings(commandSuggestions)
+	}
 	if len(commandSuggestions) > 0 || currentCommand == nil {
 		return commandSuggestions
 	}
 	return positionalValueCompletions(a, currentCommand, currentCommand.positionalArgForIndex(len(positionalArgs)), positionalArgs, current)
+}
+
+func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
+	if len(args) == 0 {
+		return nil, false
+	}
+
+	switch args[0] {
+	case "completion":
+		if len(args) == 1 {
+			return filterPrefix([]string{"bash", "zsh", "fish", "powershell"}, current), true
+		}
+		return nil, true
+	case "spec":
+		if len(args) == 1 {
+			return filterPrefix([]string{"json"}, current), true
+		}
+		return nil, true
+	case "docs":
+		if len(args) == 1 {
+			return filterPrefix([]string{"markdown", "man"}, current), true
+		}
+		return nil, true
+	default:
+		return nil, false
+	}
 }
 
 func (a *App) newRootFlagSet() *FlagSet {
