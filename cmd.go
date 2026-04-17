@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"text/template"
@@ -28,14 +29,10 @@ Usage:
   {{.Name}} [flags] <command> [subcommand] [args]
 
 Available Commands:
-{{range .Commands}}{{if .Runnable}}
+{{range .Commands}}{{if and .Runnable (not .Hidden)}}
   {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
-options:
-
-  -v --verbose   make the operation more talkative
-
-Use "{{.Name}} [command] --help" for more information about a command.
+Use "{{.Name}} help [command]" for more information about a command.
 `
 
 	DefaultApp = NewApp(filepath.Base(os.Args[0]))
@@ -51,19 +48,78 @@ type App struct {
 	Out           io.Writer
 	Err           io.Writer
 	SetFlags      func(f *FlagSet)
+	ConfigEnabled bool
+	ConfigLoader  ConfigLoader
+	ConfigFlag    ConfigFlagOptions
 
 	mu         sync.Mutex
 	exitStatus int
+	flag       *FlagSet
+	configData map[string]any
 }
 
 // NewApp creates a new App instance
 func NewApp(name string) *App {
-	return &App{
+	app := &App{
 		Name:          name,
 		Short:         "Command-line tool",
 		UsageTemplate: defaultUsageTemplate,
 		Out:           os.Stdout,
 		Err:           os.Stderr,
+	}
+	app.setDefaultConfigOptions()
+	return app
+}
+
+func (a *App) EnableConfigSupport() {
+	a.ConfigEnabled = true
+	a.setDefaultConfigOptions()
+	if a.ConfigLoader == nil {
+		a.ConfigLoader = LoadJSONConfig
+	}
+}
+
+func (a *App) setDefaultConfigOptions() {
+	if a.ConfigFlag.Name == "" {
+		a.ConfigFlag.Name = "config"
+	}
+	if a.ConfigFlag.Usage == "" {
+		a.ConfigFlag.Usage = "path to JSON config file"
+	}
+	if len(a.ConfigFlag.EnvVars) == 0 && a.Name != "" {
+		a.ConfigFlag.EnvVars = []string{defaultConfigEnvVar(a.Name)}
+	}
+}
+
+func (a *App) configEnabled() bool {
+	return a.ConfigEnabled
+}
+
+func (a *App) configureFlagSet(flagSet *FlagSet, command *Command) {
+	if flagSet == nil {
+		return
+	}
+	if a.configEnabled() {
+		a.configureConfigFlag(flagSet)
+	}
+	if a.SetFlags != nil {
+		a.SetFlags(flagSet)
+	}
+	if command != nil && command.SetFlags != nil {
+		command.SetFlags(flagSet)
+	}
+}
+
+func (a *App) configureConfigFlag(flagSet *FlagSet) {
+	if _, exists := flagSet.Lookup(a.ConfigFlag.Name); exists {
+		return
+	}
+	var value string
+	flagSet.StringVar(&value, a.ConfigFlag.Name, "", a.ConfigFlag.Usage, a.ConfigFlag.Shorthand)
+	flagSet.BindEnv(a.ConfigFlag.Name, a.ConfigFlag.EnvVars...)
+	flagSet.SetCategory(a.ConfigFlag.Name, "Global")
+	if a.ConfigFlag.Example != "" {
+		flagSet.SetExample(a.ConfigFlag.Name, a.ConfigFlag.Example)
 	}
 }
 
@@ -74,6 +130,11 @@ type Command struct {
 	UsageLine   string
 	Short       string
 	Long        string
+	Group       string
+	Examples    []string
+	Positionals []PositionalArg
+	Deprecated  string
+	Hidden      bool
 	Run         func(ctx context.Context, cmd *Command, args []string) error
 	SetFlags    func(f *FlagSet)
 	SubCommands Commands
@@ -97,8 +158,12 @@ func (c *Command) Usage() {
 
 	fmt.Fprintf(out, "\nUsage: %s\n\n", c.UsageLine)
 
-	if c.Aliases != nil {
+	if len(c.Aliases) > 0 {
 		fmt.Fprintf(out, "  Aliases: %s\n\n", strings.Join(c.Aliases, ", "))
+	}
+
+	if c.Deprecated != "" {
+		fmt.Fprintf(out, "Deprecated: %s\n\n", c.Deprecated)
 	}
 
 	if c.Long != "" {
@@ -108,55 +173,22 @@ func (c *Command) Usage() {
 
 	// Display subcommands if any
 	if len(c.SubCommands) > 0 {
-		fmt.Fprintf(out, "Available Subcommands:\n")
-
-		maxLen := 0
-
-		for _, sub := range c.SubCommands {
-			if sub.Runnable() {
-				nameLen := len(sub.Name)
-				if nameLen > maxLen {
-					maxLen = nameLen
-				}
-			}
-		}
-
-		for _, sub := range c.SubCommands {
-			if sub.Runnable() {
-				fmt.Fprintf(out, "  %-*s %s\n", maxLen+2, sub.Name, sub.Short)
-			}
-		}
-
-		fmt.Fprintf(out, "\n")
+		printCommands(out, "Available Subcommands", c.SubCommands)
 	}
 
 	if c.flag != nil {
-		// Display flags
-		fmt.Fprintf(out, "Flags:\n")
-
-		maxLen := 0
-
-		c.flag.VisitAll(func(f *Flag) {
-			nameLen := len(f.Name)
-			if nameLen > maxLen {
-				maxLen = nameLen
-			}
-		})
-
-		maxLen += 2
-
-		c.flag.VisitAll(func(f *Flag) {
-
-			if len(f.Shorthand) > 0 {
-				fmt.Fprintf(out, "  -%s --%-*s %s\n", f.Shorthand, maxLen, f.Name, f.Usage)
-			} else {
-				fmt.Fprintf(out, "     --%-*s %s\n", maxLen, f.Name, f.Usage)
-			}
-		})
-
-		fmt.Fprintf(out, "\n")
+		printFlagSections(out, "Flags", c.flag)
 	}
 
+	printPositionals(out, c.Positionals)
+
+	if len(c.Examples) > 0 {
+		fmt.Fprintf(out, "Examples:\n")
+		for _, example := range c.Examples {
+			fmt.Fprintf(out, "  %s\n", example)
+		}
+		fmt.Fprintf(out, "\n")
+	}
 }
 
 // Runnable bool
@@ -212,25 +244,71 @@ func Execute() {
 func (a *App) Run(ctx context.Context, args []string) error {
 	log.SetFlags(0)
 
-	// Preliminary check for help
-	for _, arg := range args {
-		if arg == "-h" || arg == "--help" || arg == "help" {
-			if arg == "help" && len(args) > 1 {
-				return a.help(args[1:])
-			}
-			a.Usage()
-			return nil
-		}
-	}
-
 	if len(args) < 1 {
 		a.Usage()
 		a.setExitStatus(2)
 		return nil
 	}
 
-	name := args[0]
-	cmd, remainingArgs, err := findCommand(a.Commands, args)
+	if args[0] == "-h" || args[0] == "--help" {
+		a.Usage()
+		return nil
+	}
+
+	if args[0] == "help" {
+		return a.help(args[1:])
+	}
+
+	a.flag = nil
+	a.configData = nil
+	if a.SetFlags != nil || a.configEnabled() {
+		a.flag = NewFlagSet(a.Name, ContinueOnError)
+		a.flag.SetOutput(a.Err)
+		a.flag.Usage = a.Usage
+		a.configureFlagSet(a.flag, nil)
+	}
+
+	parsedAppFlags := []parsedFlagValue{}
+	remainingArgs := args
+	if a.flag != nil {
+		if err := a.flag.ApplyEnv(); err != nil {
+			a.setExitStatus(2)
+			return err
+		}
+		var err error
+		remainingArgs, parsedAppFlags, err = a.parseAppFlags(args)
+		if err != nil {
+			if errors.Is(err, ErrHelp) {
+				return nil
+			}
+			a.setExitStatus(2)
+			return err
+		}
+		if err := a.loadConfigData(); err != nil {
+			a.setExitStatus(2)
+			return err
+		}
+	}
+
+	if len(remainingArgs) < 1 {
+		a.Usage()
+		a.setExitStatus(2)
+		return nil
+	}
+
+	if remainingArgs[0] == "help" {
+		return a.help(remainingArgs[1:])
+	}
+
+	if handled, err := a.runBuiltinCommand(remainingArgs); handled {
+		if err != nil {
+			a.setExitStatus(2)
+		}
+		return err
+	}
+
+	name := remainingArgs[0]
+	cmd, remainingArgs, err := findCommand(a.Commands, remainingArgs)
 
 	if err != nil {
 		suggestions := suggestCommand(name, a.Commands)
@@ -242,26 +320,52 @@ func (a *App) Run(ctx context.Context, args []string) error {
 
 	cmd.app = a
 
-	if cmd.flag == nil {
-		cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
-	}
+	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	cmd.flag.SetOutput(a.Err)
-
-	if a.SetFlags != nil {
-		a.SetFlags(cmd.flag)
-	}
-
-	if cmd.SetFlags != nil {
-		cmd.SetFlags(cmd.flag)
-	}
+	a.configureFlagSet(cmd.flag, cmd)
 
 	cmd.flag.Usage = func() {
 		cmd.Usage()
 	}
 
-	if err := cmd.flag.Parse(remainingArgs); err != nil {
+	if err := cmd.flag.ApplyConfig(a.configData); err != nil {
 		a.setExitStatus(2)
 		return err
+	}
+
+	if err := cmd.flag.ApplyEnv(); err != nil {
+		a.setExitStatus(2)
+		return err
+	}
+
+	for _, parsedFlag := range parsedAppFlags {
+		if err := cmd.flag.Set(parsedFlag.Name, parsedFlag.Value); err != nil {
+			a.setExitStatus(2)
+			return err
+		}
+	}
+
+	if err := cmd.flag.Parse(remainingArgs); err != nil {
+		if errors.Is(err, ErrHelp) {
+			return nil
+		}
+		a.setExitStatus(2)
+		return err
+	}
+
+	if err := cmd.flag.Validate(); err != nil {
+		a.setExitStatus(2)
+		return err
+	}
+
+	if err := cmd.validatePositionals(cmd.flag.Args()); err != nil {
+		a.setExitStatus(2)
+		return err
+	}
+
+	cmd.flag.WarnDeprecated()
+	if cmd.Deprecated != "" {
+		fmt.Fprintf(a.Err, "Warning: command %q is deprecated: %s\n", cmd.Name, cmd.Deprecated)
 	}
 
 	if err := cmd.Run(ctx, cmd, cmd.flag.Args()); err != nil {
@@ -292,6 +396,9 @@ func (a *App) Usage() {
 	}
 	bw := bufio.NewWriter(a.Err)
 	runTemplate(bw, a.UsageTemplate, data)
+	if a.flag != nil {
+		printFlagSections(bw, "Global Flags", a.flag)
+	}
 	bw.Flush()
 }
 
@@ -306,8 +413,66 @@ func (a *App) help(args []string) error {
 		return err
 	}
 	cmd.app = a
+	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
+	cmd.flag.SetOutput(a.Err)
+	a.configureFlagSet(cmd.flag, cmd)
 	cmd.Usage()
 	return nil
+}
+
+type parsedFlagValue struct {
+	Name  string
+	Value string
+}
+
+func (a *App) parseAppFlags(args []string) ([]string, []parsedFlagValue, error) {
+	if a.flag == nil {
+		return args, nil, nil
+	}
+
+	parsed := make([]parsedFlagValue, 0)
+	for i := 0; i < len(args); {
+		arg := args[i]
+
+		switch arg {
+		case "-h", "--help":
+			a.Usage()
+			return nil, nil, ErrHelp
+		case "--":
+			return args[i+1:], parsed, nil
+		}
+
+		if len(arg) < 2 || arg[0] != '-' {
+			return args[i:], parsed, nil
+		}
+
+		a.flag.args = args[i:]
+		beforeArgs := len(a.flag.args)
+		beforeActual := len(a.flag.actual)
+		seen, err := a.flag.parseOne()
+		if err != nil {
+			return nil, nil, err
+		}
+		if !seen {
+			return args[i:], parsed, nil
+		}
+
+		consumed := beforeArgs - len(a.flag.args)
+		if consumed == 0 {
+			return args[i:], parsed, nil
+		}
+		i += consumed
+
+		if len(a.flag.actual) > beforeActual {
+			flag := a.flag.actual[len(a.flag.actual)-1]
+			parsed = append(parsed, parsedFlagValue{
+				Name:  flag.Name,
+				Value: flag.Value.String(),
+			})
+		}
+	}
+
+	return nil, parsed, nil
 }
 
 // findCommand recursively finds a command or subcommand
@@ -358,6 +523,174 @@ func capitalize(s string) string {
 	}
 	r, n := utf8.DecodeRuneInString(s)
 	return string(unicode.ToTitle(r)) + s[n:]
+}
+
+func visibleFlags(flagSet *FlagSet) []*Flag {
+	if flagSet == nil {
+		return nil
+	}
+
+	flags := make([]*Flag, 0)
+	flagSet.VisitAll(func(flag *Flag) {
+		if flag.Hidden {
+			return
+		}
+		flags = append(flags, flag)
+	})
+	return flags
+}
+
+func visibleCommands(commands Commands) Commands {
+	visible := make(Commands, 0, len(commands))
+	for _, command := range commands {
+		if command.Hidden || !command.Runnable() {
+			continue
+		}
+		visible = append(visible, command)
+	}
+	return visible
+}
+
+func printCommands(out io.Writer, title string, commands Commands) {
+	commands = visibleCommands(commands)
+	if len(commands) == 0 {
+		return
+	}
+
+	grouped := make([]string, 0)
+	byGroup := map[string]Commands{}
+	for _, command := range commands {
+		group := command.Group
+		if group == "" {
+			group = "Commands"
+		}
+		if _, ok := byGroup[group]; !ok {
+			grouped = append(grouped, group)
+		}
+		byGroup[group] = append(byGroup[group], command)
+	}
+	slices.Sort(grouped)
+
+	fmt.Fprintf(out, "%s:\n", title)
+	for _, group := range grouped {
+		if len(grouped) > 1 || group != "Commands" {
+			fmt.Fprintf(out, "  %s:\n", group)
+		}
+		maxLen := 0
+		for _, command := range byGroup[group] {
+			if len(command.Name) > maxLen {
+				maxLen = len(command.Name)
+			}
+		}
+		for _, command := range byGroup[group] {
+			prefix := "  "
+			if len(grouped) > 1 || group != "Commands" {
+				prefix = "    "
+			}
+			fmt.Fprintf(out, "%s%-*s %s\n", prefix, maxLen+2, command.Name, command.Short)
+		}
+	}
+	fmt.Fprintf(out, "\n")
+}
+
+func printFlagSections(out io.Writer, title string, flagSet *FlagSet) {
+	flags := visibleFlags(flagSet)
+	if len(flags) == 0 {
+		return
+	}
+
+	groupNames := make([]string, 0)
+	grouped := map[string][]*Flag{}
+	for _, flag := range flags {
+		group := flag.Category
+		if group == "" {
+			group = "Flags"
+		}
+		if _, ok := grouped[group]; !ok {
+			groupNames = append(groupNames, group)
+		}
+		grouped[group] = append(grouped[group], flag)
+	}
+	slices.Sort(groupNames)
+
+	fmt.Fprintf(out, "%s:\n", title)
+	for _, group := range groupNames {
+		if len(groupNames) > 1 || group != "Flags" {
+			fmt.Fprintf(out, "  %s:\n", group)
+		}
+
+		maxLen := 0
+		for _, flag := range grouped[group] {
+			if l := len(flagSynopsis(flag)); l > maxLen {
+				maxLen = l
+			}
+		}
+
+		for _, flag := range grouped[group] {
+			prefix := "  "
+			if len(groupNames) > 1 || group != "Flags" {
+				prefix = "    "
+			}
+			fmt.Fprintf(out, "%s%-*s %s\n", prefix, maxLen+2, flagSynopsis(flag), flagDescription(flag))
+		}
+	}
+	fmt.Fprintf(out, "\n")
+}
+
+func flagSynopsis(flag *Flag) string {
+	placeholder, _ := UnquoteUsage(flag)
+	parts := make([]string, 0, 2)
+	if flag.Shorthand != "" {
+		parts = append(parts, "-"+flag.Shorthand)
+	}
+	parts = append(parts, "--"+flag.Name)
+
+	synopsis := strings.Join(parts, ", ")
+	if placeholder != "" {
+		synopsis += " <" + placeholder + ">"
+	}
+	return synopsis
+}
+
+func flagDescription(flag *Flag) string {
+	_, usage := UnquoteUsage(flag)
+	annotations := make([]string, 0, 5)
+	if len(flag.EnvVars) > 0 {
+		annotations = append(annotations, "env: "+strings.Join(flag.EnvVars, ", "))
+	}
+	if len(flag.ConfigKeys) > 0 {
+		annotations = append(annotations, "config: "+strings.Join(flag.ConfigKeys, ", "))
+	}
+	if len(flag.Enum) > 0 {
+		annotations = append(annotations, "choices: "+strings.Join(flag.Enum, ", "))
+	}
+	if flag.Required {
+		annotations = append(annotations, "required")
+	}
+	if flag.Deprecated != "" {
+		annotations = append(annotations, "deprecated: "+flag.Deprecated)
+	}
+	if flag.Example != "" {
+		annotations = append(annotations, "example: "+flag.Example)
+	}
+	if def := flagDefaultDescription(flag); def != "" {
+		annotations = append(annotations, "default: "+def)
+	}
+	if len(annotations) == 0 {
+		return usage
+	}
+	return usage + " [" + strings.Join(annotations, "] [") + "]"
+}
+
+func flagDefaultDescription(flag *Flag) string {
+	isZero, err := isZeroValue(flag, flag.DefValue)
+	if err != nil || isZero {
+		return ""
+	}
+	if _, ok := flag.Value.(*stringValue); ok {
+		return strconv.Quote(flag.DefValue)
+	}
+	return flag.DefValue
 }
 
 func runTemplate(w io.Writer, text string, data interface{}) {

@@ -50,6 +50,9 @@ func suggestCommand(name string, cmds Commands) []string {
 	var suggestions []suggestion
 
 	for _, cmd := range cmds {
+		if cmd.Hidden {
+			continue
+		}
 		d := levenshtein(name, cmd.Name)
 		if d <= 3 { // Threshold for similarity
 			suggestions = append(suggestions, suggestion{cmd.Name, d})

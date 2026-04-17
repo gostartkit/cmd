@@ -325,12 +325,32 @@ type FlagSet struct {
 
 // A Flag represents the state of a flag.
 type Flag struct {
-	Name      string // name as it appears on command line
-	Shorthand string // single-letter shorthand name
-	Usage     string // help message
-	Value     Value  // value as set
-	DefValue  string // default value (as text); for usage message
+	Name       string // name as it appears on command line
+	Shorthand  string // single-letter shorthand name
+	Usage      string // help message
+	Value      Value  // value as set
+	DefValue   string // default value (as text); for usage message
+	Category   string // logical help group
+	EnvVars    []string
+	ConfigKeys []string
+	Enum       []string
+	Required   bool
+	Hidden     bool
+	Deprecated string
+	Example    string
+	Completion CompletionFunc
 }
+
+type CompletionContext struct {
+	App        *App
+	Command    *Command
+	Flag       *Flag
+	Positional *PositionalArg
+	Args       []string
+	Current    string
+}
+
+type CompletionFunc func(ctx CompletionContext) []string
 
 // sortFlags returns a slice of flags sorted by name.
 func sortFlags(flags []*Flag) {
@@ -405,11 +425,22 @@ func VisitAll(fn func(*Flag)) {
 // Visit visits the flags in lexicographical order, calling fn for each.
 // It visits only those flags that have been set.
 func (f *FlagSet) Visit(fn func(*Flag)) {
-	if !f.sorted {
-		sortFlags(f.formal)
-		f.sorted = true
+	if len(f.actual) == 0 {
+		return
 	}
-	for _, flag := range f.formal {
+
+	actual := make([]*Flag, 0, len(f.actual))
+	seen := make(map[string]struct{}, len(f.actual))
+	for _, flag := range f.actual {
+		if _, ok := seen[flag.Name]; ok {
+			continue
+		}
+		seen[flag.Name] = struct{}{}
+		actual = append(actual, flag)
+	}
+
+	sortFlags(actual)
+	for _, flag := range actual {
 		fn(flag)
 	}
 }
@@ -484,6 +515,166 @@ func (f *FlagSet) set(name, value string) error {
 	f.actual = append(f.actual, flag)
 
 	return nil
+}
+
+func (f *FlagSet) mustLookupFlag(name string) *Flag {
+	flag, ok := f.Lookup(name)
+	if !ok {
+		panic(f.sprintf("flag not defined: %s", name))
+	}
+	return flag
+}
+
+func (f *FlagSet) BindEnv(name string, envVars ...string) {
+	flag := f.mustLookupFlag(name)
+	flag.EnvVars = append([]string(nil), envVars...)
+}
+
+func (f *FlagSet) BindConfig(name string, configKeys ...string) {
+	flag := f.mustLookupFlag(name)
+	flag.ConfigKeys = append([]string(nil), configKeys...)
+}
+
+func (f *FlagSet) SetEnum(name string, values ...string) {
+	flag := f.mustLookupFlag(name)
+	flag.Enum = append([]string(nil), values...)
+}
+
+func (f *FlagSet) SetCompletion(name string, fn CompletionFunc) {
+	flag := f.mustLookupFlag(name)
+	flag.Completion = fn
+}
+
+func (f *FlagSet) MarkRequired(name string) {
+	f.mustLookupFlag(name).Required = true
+}
+
+func (f *FlagSet) MarkHidden(name string) {
+	f.mustLookupFlag(name).Hidden = true
+}
+
+func (f *FlagSet) MarkDeprecated(name, message string) {
+	f.mustLookupFlag(name).Deprecated = message
+}
+
+func (f *FlagSet) SetCategory(name, category string) {
+	f.mustLookupFlag(name).Category = category
+}
+
+func (f *FlagSet) SetExample(name, example string) {
+	f.mustLookupFlag(name).Example = example
+}
+
+func BindEnv(name string, envVars ...string) {
+	CommandLine.BindEnv(name, envVars...)
+}
+
+func BindConfig(name string, configKeys ...string) {
+	CommandLine.BindConfig(name, configKeys...)
+}
+
+func SetEnum(name string, values ...string) {
+	CommandLine.SetEnum(name, values...)
+}
+
+func SetCompletion(name string, fn CompletionFunc) {
+	CommandLine.SetCompletion(name, fn)
+}
+
+func MarkRequired(name string) {
+	CommandLine.MarkRequired(name)
+}
+
+func MarkHidden(name string) {
+	CommandLine.MarkHidden(name)
+}
+
+func MarkDeprecated(name, message string) {
+	CommandLine.MarkDeprecated(name, message)
+}
+
+func SetCategory(name, category string) {
+	CommandLine.SetCategory(name, category)
+}
+
+func SetExample(name, example string) {
+	CommandLine.SetExample(name, example)
+}
+
+func (f *FlagSet) IsSet(name string) bool {
+	for _, flag := range f.actual {
+		if flag.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *FlagSet) ApplyEnv() error {
+	var applyErr error
+	f.VisitAll(func(flag *Flag) {
+		if applyErr != nil || len(flag.EnvVars) == 0 {
+			return
+		}
+		for _, envVar := range flag.EnvVars {
+			value, ok := os.LookupEnv(envVar)
+			if !ok {
+				continue
+			}
+			if err := f.Set(flag.Name, value); err != nil {
+				applyErr = err
+			}
+			return
+		}
+	})
+	return applyErr
+}
+
+func (f *FlagSet) ApplyConfig(data map[string]any) error {
+	var applyErr error
+	f.VisitAll(func(flag *Flag) {
+		if applyErr != nil || len(flag.ConfigKeys) == 0 || f.IsSet(flag.Name) {
+			return
+		}
+		for _, key := range flag.ConfigKeys {
+			value, ok := configValueAtPath(data, key)
+			if !ok {
+				continue
+			}
+			text, err := stringifyConfigValue(value)
+			if err != nil {
+				applyErr = fmt.Errorf("config key %q for --%s: %w", key, flag.Name, err)
+				return
+			}
+			if err := f.Set(flag.Name, text); err != nil {
+				applyErr = fmt.Errorf("config key %q for --%s: %w", key, flag.Name, err)
+			}
+			return
+		}
+	})
+	return applyErr
+}
+
+func (f *FlagSet) Validate() error {
+	var missing []string
+	f.VisitAll(func(flag *Flag) {
+		if flag.Required && !f.IsSet(flag.Name) {
+			missing = append(missing, "--"+flag.Name)
+		}
+	})
+	if len(missing) == 0 {
+		return nil
+	}
+	return f.failf("required flag(s) not set: %s", strings.Join(missing, ", "))
+}
+
+func (f *FlagSet) WarnDeprecated() {
+	f.Visit(func(flag *Flag) {
+		if flag.Deprecated == "" {
+			return
+		}
+		fmt.Fprintf(f.Output(), "Warning: flag --%s is deprecated: %s\n", flag.Name, flag.Deprecated)
+	})
 }
 
 // Set sets the value of the named command-line flag.
@@ -1105,7 +1296,7 @@ func (f *FlagSet) parseOne() (bool, error) {
 				f.usage()
 				return false, ErrHelp
 			}
-			return false, f.failf("flag provided but not defined: -%s", name)
+			return false, f.failf("flag provided but not defined: -%s%s", name, f.formatFlagSuggestion(name, true))
 		}
 	} else {
 		flag, ok = f.Lookup(name)
@@ -1114,7 +1305,7 @@ func (f *FlagSet) parseOne() (bool, error) {
 				f.usage()
 				return false, ErrHelp
 			}
-			return false, f.failf("flag provided but not defined: --%s", name)
+			return false, f.failf("flag provided but not defined: --%s%s", name, f.formatFlagSuggestion(name, false))
 		}
 	}
 
@@ -1149,6 +1340,61 @@ func (f *FlagSet) parseOne() (bool, error) {
 	return true, nil
 }
 
+func (f *FlagSet) formatFlagSuggestion(name string, shorthand bool) string {
+	suggestions := suggestFlags(name, f.formal, shorthand)
+	if len(suggestions) == 0 {
+		return ""
+	}
+	return ". Did you mean " + strings.Join(suggestions, " or ") + "?"
+}
+
+func suggestFlags(name string, flags []*Flag, shorthand bool) []string {
+	type suggestion struct {
+		name string
+		dist int
+	}
+
+	candidates := make([]suggestion, 0)
+	for _, flag := range flags {
+		if shorthand {
+			if flag.Shorthand == "" {
+				continue
+			}
+			distance := levenshtein(name, flag.Shorthand)
+			if distance <= 1 {
+				candidates = append(candidates, suggestion{name: "-" + flag.Shorthand, dist: distance})
+			}
+			continue
+		}
+
+		distance := levenshtein(name, flag.Name)
+		if distance <= 3 {
+			candidates = append(candidates, suggestion{name: "--" + flag.Name, dist: distance})
+		}
+	}
+
+	slices.SortFunc(candidates, func(a, b suggestion) int {
+		if a.dist == b.dist {
+			return strings.Compare(a.name, b.name)
+		}
+		return a.dist - b.dist
+	})
+
+	result := make([]string, 0, 3)
+	seen := map[string]struct{}{}
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.name]; ok {
+			continue
+		}
+		seen[candidate.name] = struct{}{}
+		result = append(result, candidate.name)
+		if len(result) == 3 {
+			break
+		}
+	}
+	return result
+}
+
 // Parse parses flag definitions from the argument list, which should not
 // include the command name. Must be called after all flags in the [FlagSet]
 // are defined and before flags are accessed by the program.
@@ -1156,13 +1402,28 @@ func (f *FlagSet) parseOne() (bool, error) {
 func (f *FlagSet) Parse(arguments []string) error {
 	f.parsed = true
 	f.args = arguments
-	for {
+	positionals := make([]string, 0, len(arguments))
+
+	for len(f.args) > 0 {
+		arg := f.args[0]
+		if arg == "--" {
+			positionals = append(positionals, f.args[1:]...)
+			f.args = positionals
+			return nil
+		}
+
+		if len(arg) < 2 || arg[0] != '-' {
+			positionals = append(positionals, arg)
+			f.args = f.args[1:]
+			continue
+		}
+
 		seen, err := f.parseOne()
 		if seen {
 			continue
 		}
 		if err == nil {
-			break
+			continue
 		}
 		switch f.errorHandling {
 		case ContinueOnError:
@@ -1176,6 +1437,8 @@ func (f *FlagSet) Parse(arguments []string) error {
 			panic(err)
 		}
 	}
+
+	f.args = positionals
 	return nil
 }
 
