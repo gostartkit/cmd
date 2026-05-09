@@ -15,24 +15,25 @@ func (a *App) runBuiltinCommand(args []string) (bool, error) {
 		return false, nil
 	}
 
+	commands := a.rootSubCommands()
 	switch args[0] {
 	case "completion":
-		if a.Commands.Search("completion") != nil {
+		if commands.Search("completion") != nil {
 			return false, nil
 		}
 		return true, a.runCompletion(args[1:])
 	case "spec":
-		if a.Commands.Search("spec") != nil {
+		if commands.Search("spec") != nil {
 			return false, nil
 		}
 		return true, a.runSpec(args[1:])
 	case "docs":
-		if a.Commands.Search("docs") != nil {
+		if commands.Search("docs") != nil {
 			return false, nil
 		}
 		return true, a.runDocs(args[1:])
 	case "__complete":
-		if a.Commands.Search("__complete") != nil {
+		if commands.Search("__complete") != nil {
 			return false, nil
 		}
 		return true, a.runComplete(args[1:])
@@ -83,6 +84,7 @@ func (a *App) runComplete(args []string) error {
 }
 
 func (a *App) complete(args []string) []string {
+	root := a.rootCommand()
 	current := ""
 	completed := args
 	if len(args) > 0 {
@@ -92,7 +94,7 @@ func (a *App) complete(args []string) []string {
 
 	rootFlags := a.newRootFlagSet()
 	currentFlags := rootFlags
-	currentCommands := a.Commands
+	currentCommands := root.SubCommands
 	var currentCommand *Command
 	var expectingValue *Flag
 	afterDoubleDash := false
@@ -137,7 +139,11 @@ func (a *App) complete(args []string) []string {
 	}
 
 	if expectingValue != nil {
-		return valueCompletions(a, currentCommand, expectingValue, positionalArgs, current, "")
+		valueCommand := currentCommand
+		if valueCommand == nil {
+			valueCommand = root
+		}
+		return valueCompletions(a, valueCommand, expectingValue, positionalArgs, current, "")
 	}
 
 	suggestions := make([]string, 0)
@@ -147,8 +153,12 @@ func (a *App) complete(args []string) []string {
 			suggestions = append(suggestions, a.builtinSpecs()...)
 		}
 		suggestions = append(suggestions, flagCompletions(currentFlags)...)
-		if currentCommand != nil {
-			suggestions = append(suggestions, positionalValueCompletions(a, currentCommand, currentCommand.positionalArgForIndex(len(positionalArgs)), positionalArgs, "")...)
+		target := currentCommand
+		if target == nil && root.Runnable() {
+			target = root
+		}
+		if target != nil {
+			suggestions = append(suggestions, positionalValueCompletions(a, target, target.positionalArgForIndex(len(positionalArgs)), positionalArgs, "")...)
 		}
 		return uniqueSortedStrings(suggestions)
 	}
@@ -159,7 +169,11 @@ func (a *App) complete(args []string) []string {
 			if hasAttachedValue {
 				prefix = current[:len(current)-len(attachedValue)]
 			}
-			return valueCompletions(a, currentCommand, flag, positionalArgs, attachedValue, prefix)
+			valueCommand := currentCommand
+			if valueCommand == nil {
+				valueCommand = root
+			}
+			return valueCompletions(a, valueCommand, flag, positionalArgs, attachedValue, prefix)
 		}
 		return filterPrefix(flagCompletions(currentFlags), current)
 	}
@@ -169,10 +183,18 @@ func (a *App) complete(args []string) []string {
 		commandSuggestions = append(commandSuggestions, filterPrefix(a.builtinSpecs(), current)...)
 		commandSuggestions = uniqueSortedStrings(commandSuggestions)
 	}
-	if len(commandSuggestions) > 0 || currentCommand == nil {
+	if len(commandSuggestions) > 0 {
 		return commandSuggestions
 	}
-	return positionalValueCompletions(a, currentCommand, currentCommand.positionalArgForIndex(len(positionalArgs)), positionalArgs, current)
+
+	target := currentCommand
+	if target == nil && root.Runnable() {
+		target = root
+	}
+	if target == nil {
+		return nil
+	}
+	return positionalValueCompletions(a, target, target.positionalArgForIndex(len(positionalArgs)), positionalArgs, current)
 }
 
 func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
@@ -202,19 +224,21 @@ func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
 }
 
 func (a *App) newRootFlagSet() *FlagSet {
-	if a.SetFlags == nil && !a.configEnabled() {
+	root := a.rootCommand()
+	if a.SetFlags == nil && !a.configEnabled() && (root == nil || root.SetFlags == nil) {
 		return nil
 	}
 	flagSet := NewFlagSet(a.Name, ContinueOnError)
 	flagSet.SetOutput(io.Discard)
-	a.configureFlagSet(flagSet, nil)
+	a.configureFlagSet(flagSet, root, root)
 	return flagSet
 }
 
 func (a *App) newCommandFlagSet(cmd *Command) *FlagSet {
+	root := a.rootCommand()
 	flagSet := NewFlagSet(cmd.Name, ContinueOnError)
 	flagSet.SetOutput(io.Discard)
-	a.configureFlagSet(flagSet, cmd)
+	a.configureFlagSet(flagSet, root, cmd)
 	return flagSet
 }
 

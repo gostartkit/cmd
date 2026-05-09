@@ -43,6 +43,236 @@ func TestAppRun(t *testing.T) {
 	}
 }
 
+func TestAppRootRunWithoutArgs(t *testing.T) {
+	app := NewApp("test")
+	var runCount int
+	var capturedArgs []string
+	app.Root = &Command{
+		UsageLine: "test [flags] [target]",
+		Run: func(ctx context.Context, cmd *Command, args []string) error {
+			runCount++
+			capturedArgs = append([]string(nil), args...)
+			return nil
+		},
+	}
+
+	if err := app.Run(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if runCount != 1 {
+		t.Fatalf("expected root run once, got %d", runCount)
+	}
+	if len(capturedArgs) != 0 {
+		t.Fatalf("expected no root args, got %v", capturedArgs)
+	}
+}
+
+func TestAppRootWithoutRunShowsUsage(t *testing.T) {
+	app := NewApp("test")
+	var output bytes.Buffer
+	app.Out = &output
+	app.Err = &output
+	app.Root = &Command{
+		UsageLine: "test [flags] <command>",
+		Short:     "root entrypoint",
+		SubCommands: []*Command{
+			{
+				Name:  "version",
+				Short: "print version",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := app.Run(context.Background(), nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got := output.String()
+	if !strings.Contains(got, "test [flags] <command>") {
+		t.Fatalf("expected root usage line, got %q", got)
+	}
+	if !strings.Contains(got, "version") {
+		t.Fatalf("expected subcommands in usage, got %q", got)
+	}
+	if app.ExitStatus() != 2 {
+		t.Fatalf("expected exit status 2, got %d", app.ExitStatus())
+	}
+}
+
+func TestAppRootFlagsMergedWithAppFlags(t *testing.T) {
+	app := NewApp("test")
+	app.Err = &bytes.Buffer{}
+	var verbose bool
+	var profile string
+	var ran bool
+
+	app.SetFlags = func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+	app.Root = &Command{
+		SetFlags: func(f *FlagSet) {
+			f.StringVar(&profile, "profile", "", "profile name", "p")
+		},
+		SubCommands: []*Command{
+			{
+				Name: "version",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					ran = true
+					return nil
+				},
+			},
+		},
+	}
+
+	if err := app.Run(context.Background(), []string{"--verbose", "--profile", "dev", "version"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !ran {
+		t.Fatal("expected subcommand to run")
+	}
+	if !verbose {
+		t.Fatal("expected app-level flag to be applied")
+	}
+	if profile != "dev" {
+		t.Fatalf("expected root flag to be applied, got %q", profile)
+	}
+}
+
+func TestAppRootNestedSubCommand(t *testing.T) {
+	app := NewApp("test")
+	var ran bool
+	app.Root = &Command{
+		SubCommands: []*Command{
+			{
+				Name: "admin",
+				SubCommands: []*Command{
+					{
+						Name: "users",
+						Run: func(ctx context.Context, cmd *Command, args []string) error {
+							ran = true
+							return nil
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if err := app.Run(context.Background(), []string{"admin", "users"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ran {
+		t.Fatal("expected nested subcommand to run")
+	}
+}
+
+func TestAppRootHelpRoutes(t *testing.T) {
+	app := NewApp("test")
+	var output bytes.Buffer
+	app.Out = &output
+	app.Err = &output
+	app.SetFlags = func(f *FlagSet) {
+		var verbose bool
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+	app.Root = &Command{
+		UsageLine: "test [flags] [target]",
+		Long:      "root help text",
+		Examples:  []string{"test team"},
+		Positionals: []PositionalArg{
+			{Name: "target", Usage: "target name", Required: true},
+		},
+		SubCommands: []*Command{
+			{
+				Name:      "version",
+				UsageLine: "test version",
+				SetFlags: func(f *FlagSet) {
+					var format string
+					f.StringVar(&format, "format", "", "output format", "f")
+				},
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "root help flag", args: []string{"--help"}, want: []string{"test [flags] [target]", "root help text", "Arguments:", "Examples:"}},
+		{name: "help root", args: []string{"help"}, want: []string{"test [flags] [target]", "Arguments:"}},
+		{name: "help version", args: []string{"help", "version"}, want: []string{"Usage: test version", "--format <string>"}},
+		{name: "version help", args: []string{"version", "--help"}, want: []string{"Usage: test version", "--format <string>"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output.Reset()
+			if err := app.Run(context.Background(), tt.args); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			got := output.String()
+			for _, want := range tt.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("expected help output to contain %q, got %q", want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestAppRootUnknownCommandSuggestion(t *testing.T) {
+	app := NewApp("test")
+	app.Root = &Command{
+		SubCommands: []*Command{
+			{Name: "status"},
+			{Name: "server"},
+		},
+	}
+
+	err := app.Run(context.Background(), []string{"statu"})
+	if err == nil {
+		t.Fatal("expected error for unknown command")
+	}
+	if !strings.Contains(err.Error(), "Did you mean status?") {
+		t.Fatalf("expected suggestion in error, got %v", err)
+	}
+}
+
+func TestAppBackwardCompatibilityWithoutRoot(t *testing.T) {
+	app := NewApp("test")
+	app.Err = &bytes.Buffer{}
+	var verbose bool
+	var ran bool
+	app.SetFlags = func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+	app.Commands = []*Command{
+		{
+			Name: "version",
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				ran = true
+				return nil
+			},
+		},
+	}
+
+	if err := app.Run(context.Background(), []string{"--verbose", "version"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ran || !verbose {
+		t.Fatalf("expected legacy App.Commands/App.SetFlags flow to keep working, ran=%v verbose=%v", ran, verbose)
+	}
+}
+
 func TestAppSubCommand(t *testing.T) {
 	var subRunCount int
 
@@ -595,6 +825,10 @@ func TestAppSpecCommandOutputsJSON(t *testing.T) {
 
 	if !slices.ContainsFunc(spec.GlobalFlags, func(flag FlagSpec) bool { return flag.Name == "config" }) {
 		t.Fatalf("expected builtin config flag in spec, got %+v", spec.GlobalFlags)
+	}
+
+	if spec.Root == nil || spec.Root.Name != "test" || spec.Root.UsageLine != "test [flags] <command> [subcommand] [args]" {
+		t.Fatalf("expected synthesized root spec, got %+v", spec.Root)
 	}
 
 	if len(spec.Commands) != 1 || spec.Commands[0].Name != "sayhi" {

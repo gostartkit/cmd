@@ -179,12 +179,63 @@ if err != nil {
 - `Name`: 应用名
 - `Short`: 简短说明
 - `Long`: 长说明
+- `Root`: 可选的根命令
 - `Commands`: 顶层命令列表
 - `SetFlags`: 配置全局 flag
 - `BeforeRun / AfterRun / OnError`: 生命周期 hook
 - `Middlewares`: 中间件
 - `Observers`: 事件观察者
 - `Extensions`: 自定义元数据
+
+### Root Command
+
+现在 `App` 也可以通过 `App.Root` 拥有一个真正的根命令。
+
+- `App.SetFlags` 仍然是 app 级全局 flag 入口。
+- `App.Commands` 仍然兼容，内部会被视为 root subcommands。
+- `App.Root.SetFlags` 会合并进 root/global flag 集，并对子命令可见。
+- 如果 root command 定义了 `Run`，只执行二进制本身时会运行 root command。
+- 如果 root command 没有 `Run` 但有子命令，只执行二进制本身时会输出 usage。
+
+```go
+app := cmd.NewApp("myapp")
+
+var (
+	verbose bool
+	profile string
+)
+
+app.SetFlags = func(f *cmd.FlagSet) {
+	f.BoolVar(&verbose, "verbose", false, "enable verbose output", "v")
+}
+
+app.Root = &cmd.Command{
+	UsageLine: "myapp [flags] [target]",
+	Short:     "root entrypoint",
+	Examples:  []string{"myapp team", "myapp version"},
+	Positionals: []cmd.PositionalArg{
+		{Name: "target", Usage: "target name"},
+	},
+	SetFlags: func(f *cmd.FlagSet) {
+		f.StringVar(&profile, "profile", "", "profile name", "p")
+	},
+	Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+		fmt.Printf("root args=%v verbose=%v profile=%s\n", args, verbose, profile)
+		return nil
+	},
+	SubCommands: []*cmd.Command{
+		{
+			Name:      "version",
+			UsageLine: "myapp version",
+			Short:     "print version",
+			Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+				fmt.Println("v1.0.0")
+				return nil
+			},
+		},
+	},
+}
+```
 
 ### Command
 

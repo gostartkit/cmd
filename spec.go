@@ -17,6 +17,7 @@ type AppSpec struct {
 	HasMiddleware bool              `json:"has_middleware,omitempty"`
 	HasObservers  bool              `json:"has_observers,omitempty"`
 	Extensions    map[string]any    `json:"extensions,omitempty"`
+	Root          *CommandSpec      `json:"root,omitempty"`
 	GlobalFlags   []FlagSpec        `json:"global_flags,omitempty"`
 	Commands      []CommandSpec     `json:"commands"`
 }
@@ -119,10 +120,11 @@ func (a *App) runSpec(args []string) error {
 }
 
 func (a *App) Spec() AppSpec {
+	root := a.rootCommand()
 	spec := AppSpec{
 		SchemaVersion: "v2",
 		Name:          a.Name,
-		Short:         a.Short,
+		Short:         root.Short,
 		Builtins:      a.builtinSpecs(),
 		Capabilities: CapabilitySpec{
 			GlobalFlags:        true,
@@ -150,7 +152,7 @@ func (a *App) Spec() AppSpec {
 		HasMiddleware: len(a.Middlewares) > 0,
 		HasObservers:  len(a.Observers) > 0,
 		Extensions:    cloneExtensions(a.Extensions),
-		Commands:      make([]CommandSpec, 0, len(a.Commands)),
+		Commands:      make([]CommandSpec, 0, len(root.SubCommands)),
 	}
 	if a.configEnabled() {
 		spec.Config.FlagName = a.ConfigFlag.Name
@@ -160,7 +162,11 @@ func (a *App) Spec() AppSpec {
 	if rootFlags := a.newRootFlagSet(); rootFlags != nil {
 		spec.GlobalFlags = flagSetSpec(rootFlags)
 	}
-	for _, command := range a.Commands {
+	rootSpec := a.commandSpec(root)
+	rootSpec.Name = a.Name
+	rootSpec.Flags = append([]FlagSpec(nil), spec.GlobalFlags...)
+	spec.Root = &rootSpec
+	for _, command := range root.SubCommands {
 		spec.Commands = append(spec.Commands, a.commandSpec(command))
 	}
 	return spec
@@ -267,14 +273,15 @@ func hookSpec(before BeforeHook, after AfterHook, onError ErrorHook) HookSpec {
 }
 
 func (a *App) builtinSpecs() []string {
+	commands := a.rootSubCommands()
 	builtins := []string{"help"}
-	if a.Commands.Search("completion") == nil {
+	if commands.Search("completion") == nil {
 		builtins = append(builtins, "completion")
 	}
-	if a.Commands.Search("spec") == nil {
+	if commands.Search("spec") == nil {
 		builtins = append(builtins, "spec")
 	}
-	if a.Commands.Search("docs") == nil {
+	if commands.Search("docs") == nil {
 		builtins = append(builtins, "docs")
 	}
 	return builtins

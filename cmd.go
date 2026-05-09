@@ -27,14 +27,16 @@ var (
 
 Usage:
 
-  {{.Name}} [flags] <command> [subcommand] [args]
+  {{if .UsageLine}}{{.UsageLine}}{{else}}{{.Name}} [flags]{{if .Commands}} <command> [subcommand]{{end}} [args]{{end}}
 
-Available Commands:
-{{range .Commands}}{{if and .Runnable (not .Hidden)}}
+{{if .Long}}{{.Long | trim}}
+
+{{end}}{{if .Commands}}Available Commands:
+{{range .Commands}}{{if not .Hidden}}
   {{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
 Use "{{.Name}} help [command]" for more information about a command.
-`
+{{end}}`
 
 	DefaultApp = NewApp(filepath.Base(os.Args[0]))
 )
@@ -44,6 +46,7 @@ type App struct {
 	Name          string
 	Short         string
 	Long          string
+	Root          *Command
 	Commands      Commands
 	UsageTemplate string
 	Out           io.Writer
@@ -102,17 +105,18 @@ func (a *App) configEnabled() bool {
 	return a.ConfigEnabled
 }
 
-func (a *App) configureFlagSet(flagSet *FlagSet, command *Command) {
+func (a *App) configureFlagSet(flagSet *FlagSet, root *Command, command *Command) {
 	if flagSet == nil {
 		return
 	}
 	if a.configEnabled() {
 		a.configureConfigFlag(flagSet)
 	}
-	if a.SetFlags != nil {
-		a.SetFlags(flagSet)
+	a.mergeFlags(flagSet, a.SetFlags, true)
+	if root != nil {
+		a.mergeFlags(flagSet, root.SetFlags, true)
 	}
-	if command != nil && command.SetFlags != nil {
+	if command != nil && command != root && command.SetFlags != nil {
 		command.SetFlags(flagSet)
 	}
 }
@@ -127,6 +131,67 @@ func (a *App) configureConfigFlag(flagSet *FlagSet) {
 	flagSet.SetCategory(a.ConfigFlag.Name, "Global")
 	if a.ConfigFlag.Example != "" {
 		flagSet.SetExample(a.ConfigFlag.Name, a.ConfigFlag.Example)
+	}
+}
+
+func (a *App) mergeFlags(dst *FlagSet, register func(f *FlagSet), keepExisting bool) {
+	if dst == nil || register == nil {
+		return
+	}
+
+	tmp := NewFlagSet(dst.Name(), ContinueOnError)
+	tmp.SetOutput(io.Discard)
+	register(tmp)
+	mergeFlagSets(dst, tmp, keepExisting)
+}
+
+func mergeFlagSets(dst *FlagSet, src *FlagSet, keepExisting bool) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	src.VisitAll(func(flag *Flag) {
+		if _, exists := dst.Lookup(flag.Name); exists {
+			if keepExisting {
+				return
+			}
+			panic(dst.sprintf("flag redefined: %s", flag.Name))
+		}
+		if flag.Shorthand != "" {
+			if _, exists := dst.LookupShort(flag.Shorthand); exists {
+				if keepExisting {
+					return
+				}
+				panic(dst.sprintf("shorthand redefined: %s", flag.Shorthand))
+			}
+		}
+
+		cloned := cloneFlag(flag)
+		dst.formal = append(dst.formal, cloned)
+		dst.sorted = false
+	})
+}
+
+func cloneFlag(flag *Flag) *Flag {
+	if flag == nil {
+		return nil
+	}
+	return &Flag{
+		Name:       flag.Name,
+		Shorthand:  flag.Shorthand,
+		Usage:      flag.Usage,
+		Value:      flag.Value,
+		DefValue:   flag.DefValue,
+		Category:   flag.Category,
+		EnvVars:    append([]string(nil), flag.EnvVars...),
+		ConfigKeys: append([]string(nil), flag.ConfigKeys...),
+		Enum:       append([]string(nil), flag.Enum...),
+		Required:   flag.Required,
+		Hidden:     flag.Hidden,
+		Deprecated: flag.Deprecated,
+		Example:    flag.Example,
+		Completion: flag.Completion,
+		Extensions: cloneExtensions(flag.Extensions),
 	}
 }
 
@@ -253,33 +318,140 @@ func Execute() {
 	os.Exit(DefaultApp.ExitStatus())
 }
 
+func (a *App) rootCommand() *Command {
+	root := &Command{
+		Name:        a.Name,
+		UsageLine:   a.defaultRootUsageLine(),
+		Short:       a.Short,
+		Long:        a.Long,
+		SubCommands: a.rootSubCommands(),
+		app:         a,
+	}
+	if a.Root == nil {
+		return root
+	}
+
+	root.Aliases = append([]string(nil), a.Root.Aliases...)
+	if a.Root.UsageLine != "" {
+		root.UsageLine = a.Root.UsageLine
+	}
+	if a.Root.Short != "" {
+		root.Short = a.Root.Short
+	}
+	if a.Root.Long != "" {
+		root.Long = a.Root.Long
+	}
+	root.Group = a.Root.Group
+	root.Examples = append([]string(nil), a.Root.Examples...)
+	root.Positionals = clonePositionals(a.Root.Positionals)
+	root.Deprecated = a.Root.Deprecated
+	root.Hidden = a.Root.Hidden
+	root.BeforeRun = a.Root.BeforeRun
+	root.AfterRun = a.Root.AfterRun
+	root.OnError = a.Root.OnError
+	root.Middlewares = append([]Middleware(nil), a.Root.Middlewares...)
+	root.Observers = append([]Observer(nil), a.Root.Observers...)
+	root.Extensions = cloneExtensions(a.Root.Extensions)
+	root.Run = a.Root.Run
+	root.SetFlags = a.Root.SetFlags
+	if len(a.Root.SubCommands) > 0 {
+		root.SubCommands = mergeCommands(a.Root.SubCommands, a.Commands)
+	}
+	return root
+}
+
+func (a *App) rootSubCommands() Commands {
+	if a.Root == nil {
+		return a.Commands
+	}
+	return mergeCommands(a.Root.SubCommands, a.Commands)
+}
+
+func mergeCommands(primary Commands, secondary Commands) Commands {
+	if len(primary) == 0 {
+		return secondary
+	}
+	if len(secondary) == 0 {
+		return primary
+	}
+
+	merged := make(Commands, 0, len(primary)+len(secondary))
+	seen := make(map[string]struct{}, len(primary)+len(secondary))
+	appendUnique := func(commands Commands) {
+		for _, cmd := range commands {
+			if cmd == nil {
+				continue
+			}
+			if _, exists := seen[cmd.Name]; exists {
+				continue
+			}
+			seen[cmd.Name] = struct{}{}
+			merged = append(merged, cmd)
+		}
+	}
+	appendUnique(primary)
+	appendUnique(secondary)
+	return merged
+}
+
+func clonePositionals(positionals []PositionalArg) []PositionalArg {
+	if len(positionals) == 0 {
+		return nil
+	}
+
+	cloned := make([]PositionalArg, 0, len(positionals))
+	for _, positional := range positionals {
+		cloned = append(cloned, PositionalArg{
+			Name:       positional.Name,
+			Usage:      positional.Usage,
+			Required:   positional.Required,
+			Variadic:   positional.Variadic,
+			Enum:       append([]string(nil), positional.Enum...),
+			Example:    positional.Example,
+			Completion: positional.Completion,
+			Extensions: cloneExtensions(positional.Extensions),
+		})
+	}
+	return cloned
+}
+
+func (a *App) defaultRootUsageLine() string {
+	if len(a.rootSubCommands()) > 0 {
+		return fmt.Sprintf("%s [flags] <command> [subcommand] [args]", a.Name)
+	}
+	return fmt.Sprintf("%s [flags] [args]", a.Name)
+}
+
+func (a *App) shouldRunRoot(root *Command, remainingArgs []string) bool {
+	if root == nil || !root.Runnable() {
+		return false
+	}
+	if len(remainingArgs) == 0 {
+		return true
+	}
+	if len(root.SubCommands) == 0 {
+		return true
+	}
+	return len(root.Positionals) > 0
+}
+
 // Run executes the application
 func (a *App) Run(ctx context.Context, args []string) error {
 	log.SetFlags(0)
-
-	if len(args) < 1 {
-		a.Usage()
-		a.setExitStatus(2)
-		return nil
-	}
-
-	if args[0] == "-h" || args[0] == "--help" {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
 		a.Usage()
 		return nil
-	}
-
-	if args[0] == "help" {
-		return a.help(args[1:])
 	}
 
 	a.flag = nil
 	a.configData = nil
 	a.exitStatus = 0
-	if a.SetFlags != nil || a.configEnabled() {
+	root := a.rootCommand()
+	if a.SetFlags != nil || a.configEnabled() || (root != nil && root.SetFlags != nil) {
 		a.flag = NewFlagSet(a.Name, ContinueOnError)
 		a.flag.SetOutput(a.Err)
 		a.flag.Usage = a.Usage
-		a.configureFlagSet(a.flag, nil)
+		a.configureFlagSet(a.flag, root, root)
 	}
 
 	parsedAppFlags := []parsedFlagValue{}
@@ -301,7 +473,10 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		}
 	}
 
-	if len(remainingArgs) < 1 {
+	if len(remainingArgs) == 0 {
+		if a.shouldRunRoot(root, remainingArgs) {
+			return a.runCommand(ctx, root, root, args, nil)
+		}
 		a.Usage()
 		a.setExitStatus(2)
 		return nil
@@ -319,46 +494,57 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	}
 
 	name := remainingArgs[0]
-	cmd, remainingArgs, err := findCommand(a.Commands, remainingArgs)
+	cmd, remainingArgs, err := findCommand(root.SubCommands, remainingArgs)
 
 	if err != nil {
-		suggestions := suggestCommand(name, a.Commands)
+		if a.shouldRunRoot(root, remainingArgs) {
+			return a.runCommand(ctx, root, root, args, nil)
+		}
+
+		suggestions := suggestCommand(name, root.SubCommands)
 		if len(suggestions) > 0 {
 			return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or ")), ErrorKindNotFound, 2)
 		}
 		return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name), ErrorKindNotFound, 2)
 	}
 
+	return a.runCommand(ctx, root, cmd, remainingArgs, parsedAppFlags)
+}
+
+func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args []string, inheritedFlags []parsedFlagValue) error {
 	cmd.app = a
 	startTime := time.Now()
 
 	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	cmd.flag.SetOutput(a.Err)
-	a.configureFlagSet(cmd.flag, cmd)
-
+	a.configureFlagSet(cmd.flag, root, cmd)
 	cmd.flag.Usage = func() {
+		if cmd.Name == a.Name {
+			a.Usage()
+			return
+		}
 		cmd.Usage()
 	}
 
 	if err := cmd.flag.ApplyConfig(a.configData); err != nil {
-		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
+		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	if err := cmd.flag.ApplyEnv(); err != nil {
-		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
+		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
-	for _, parsedFlag := range parsedAppFlags {
+	for _, parsedFlag := range inheritedFlags {
 		if err := cmd.flag.Set(parsedFlag.Name, parsedFlag.Value); err != nil {
-			return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
+			return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
 		}
 	}
 
-	if err := cmd.flag.Parse(remainingArgs); err != nil {
+	if err := cmd.flag.Parse(args); err != nil {
 		if errors.Is(err, ErrHelp) {
 			return nil
 		}
-		return a.fail(cmd, ctx, remainingArgs, &startTime, err, ErrorKindInvalidArguments, 2)
+		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
 	}
 
 	if err := cmd.flag.Validate(); err != nil {
@@ -367,6 +553,12 @@ func (a *App) Run(ctx context.Context, args []string) error {
 
 	if err := cmd.validatePositionals(cmd.flag.Args()); err != nil {
 		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindInvalidArguments, 2)
+	}
+
+	if !cmd.Runnable() {
+		cmd.flag.Usage()
+		a.setExitStatus(2)
+		return nil
 	}
 
 	cmd.flag.WarnDeprecated()
@@ -431,19 +623,38 @@ func (a *App) ExitStatus() int {
 }
 
 func (a *App) Usage() {
+	root := a.rootCommand()
 	data := struct {
-		Name     string
-		Short    string
-		Commands Commands
+		Name        string
+		Short       string
+		Long        string
+		UsageLine   string
+		Commands    Commands
+		Aliases     []string
+		Examples    []string
+		Positionals []PositionalArg
 	}{
-		Name:     a.Name,
-		Short:    a.Short,
-		Commands: a.Commands,
+		Name:        a.Name,
+		Short:       root.Short,
+		Long:        root.Long,
+		UsageLine:   root.UsageLine,
+		Commands:    root.SubCommands,
+		Aliases:     append([]string(nil), root.Aliases...),
+		Examples:    append([]string(nil), root.Examples...),
+		Positionals: clonePositionals(root.Positionals),
 	}
 	bw := bufio.NewWriter(a.Err)
 	runTemplate(bw, a.UsageTemplate, data)
 	if a.flag != nil {
 		printFlagSections(bw, "Global Flags", a.flag)
+	}
+	printPositionals(bw, root.Positionals)
+	if len(root.Examples) > 0 {
+		fmt.Fprintf(bw, "Examples:\n")
+		for _, example := range root.Examples {
+			fmt.Fprintf(bw, "  %s\n", example)
+		}
+		fmt.Fprintf(bw, "\n")
 	}
 	bw.Flush()
 }
@@ -454,14 +665,15 @@ func (a *App) help(args []string) error {
 		return nil
 	}
 
-	cmd, _, err := findCommand(a.Commands, args)
+	root := a.rootCommand()
+	cmd, _, err := findCommand(root.SubCommands, args)
 	if err != nil {
 		return err
 	}
 	cmd.app = a
 	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
 	cmd.flag.SetOutput(a.Err)
-	a.configureFlagSet(cmd.flag, cmd)
+	a.configureFlagSet(cmd.flag, root, cmd)
 	cmd.Usage()
 	return nil
 }
@@ -545,6 +757,9 @@ func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 		if err == nil {
 			return subCmd, remainingArgs, nil
 		}
+		if !cmd.Runnable() {
+			return nil, nil, err
+		}
 	}
 
 	return cmd, args[1:], nil
@@ -589,7 +804,10 @@ func visibleFlags(flagSet *FlagSet) []*Flag {
 func visibleCommands(commands Commands) Commands {
 	visible := make(Commands, 0, len(commands))
 	for _, command := range commands {
-		if command.Hidden || !command.Runnable() {
+		if command.Hidden {
+			continue
+		}
+		if !command.Runnable() && len(command.SubCommands) == 0 {
 			continue
 		}
 		visible = append(visible, command)

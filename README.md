@@ -179,12 +179,63 @@ The core types are `App` and `Command`.
 - `Name`: application name
 - `Short`: short description
 - `Long`: long description
+- `Root`: optional root command
 - `Commands`: top-level commands
 - `SetFlags`: register global flags
 - `BeforeRun / AfterRun / OnError`: lifecycle hooks
 - `Middlewares`: middleware chain
 - `Observers`: event observers
 - `Extensions`: custom metadata
+
+### Root Command
+
+`App` can also own a real root command through `App.Root`.
+
+- `App.SetFlags` remains the app-level global flag entry point.
+- `App.Commands` remains compatible and is treated as root subcommands.
+- `App.Root.SetFlags` is merged into the root/global flag set and is also visible to subcommands.
+- If the root command has `Run`, invoking only the binary runs the root command.
+- If the root command has no `Run` but has subcommands, invoking only the binary shows usage.
+
+```go
+app := cmd.NewApp("myapp")
+
+var (
+	verbose bool
+	profile string
+)
+
+app.SetFlags = func(f *cmd.FlagSet) {
+	f.BoolVar(&verbose, "verbose", false, "enable verbose output", "v")
+}
+
+app.Root = &cmd.Command{
+	UsageLine: "myapp [flags] [target]",
+	Short:     "root entrypoint",
+	Examples:  []string{"myapp team", "myapp version"},
+	Positionals: []cmd.PositionalArg{
+		{Name: "target", Usage: "target name"},
+	},
+	SetFlags: func(f *cmd.FlagSet) {
+		f.StringVar(&profile, "profile", "", "profile name", "p")
+	},
+	Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+		fmt.Printf("root args=%v verbose=%v profile=%s\n", args, verbose, profile)
+		return nil
+	},
+	SubCommands: []*cmd.Command{
+		{
+			Name:      "version",
+			UsageLine: "myapp version",
+			Short:     "print version",
+			Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+				fmt.Println("v1.0.0")
+				return nil
+			},
+		},
+	},
+}
+```
 
 ### Command
 

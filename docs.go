@@ -52,7 +52,14 @@ func markdownDocs(spec AppSpec) string {
 	}
 
 	fmt.Fprintf(&b, "## Usage\n\n")
-	fmt.Fprintf(&b, "`%s [flags] <command> [subcommand] [args]`\n\n", spec.Name)
+	if spec.Root != nil && spec.Root.UsageLine != "" {
+		fmt.Fprintf(&b, "`%s`\n\n", spec.Root.UsageLine)
+	} else {
+		fmt.Fprintf(&b, "`%s [flags] <command> [subcommand] [args]`\n\n", spec.Name)
+	}
+	if spec.Root != nil && spec.Root.Long != "" {
+		fmt.Fprintf(&b, "%s\n\n", strings.TrimSpace(spec.Root.Long))
+	}
 
 	if len(spec.Builtins) > 0 {
 		fmt.Fprintf(&b, "## Built-ins\n\n")
@@ -64,6 +71,12 @@ func markdownDocs(spec AppSpec) string {
 
 	if len(spec.GlobalFlags) > 0 {
 		writeMarkdownFlags(&b, "## Global Flags", spec.GlobalFlags)
+	}
+	if spec.Root != nil && len(spec.Root.Positionals) > 0 {
+		writeMarkdownPositionals(&b, "## Positional Arguments", spec.Root.Positionals)
+	}
+	if spec.Root != nil && len(spec.Root.Examples) > 0 {
+		writeMarkdownExamples(&b, "## Examples", spec.Root.Examples)
 	}
 
 	if len(spec.Commands) > 0 {
@@ -103,31 +116,10 @@ func writeMarkdownCommand(b *strings.Builder, parent string, cmd CommandSpec, le
 		writeMarkdownFlags(b, "#### Flags", cmd.Flags)
 	}
 	if len(cmd.Positionals) > 0 {
-		fmt.Fprintf(b, "#### Positional Arguments\n\n")
-		for _, positional := range cmd.Positionals {
-			fmt.Fprintf(b, "- `%s`", positional.Name)
-			if positional.Required {
-				fmt.Fprintf(b, " required")
-			}
-			if positional.Variadic {
-				fmt.Fprintf(b, " variadic")
-			}
-			if positional.Usage != "" {
-				fmt.Fprintf(b, " %s", positional.Usage)
-			}
-			if len(positional.Enum) > 0 {
-				fmt.Fprintf(b, " choices: `%s`", strings.Join(positional.Enum, "`, `"))
-			}
-			fmt.Fprintln(b)
-		}
-		fmt.Fprintln(b)
+		writeMarkdownPositionals(b, "#### Positional Arguments", cmd.Positionals)
 	}
 	if len(cmd.Examples) > 0 {
-		fmt.Fprintf(b, "#### Examples\n\n")
-		for _, example := range cmd.Examples {
-			fmt.Fprintf(b, "- `%s`\n", example)
-		}
-		fmt.Fprintln(b)
+		writeMarkdownExamples(b, "#### Examples", cmd.Examples)
 	}
 	if len(cmd.SubCommands) > 0 && subcommandPath != nil {
 		fmt.Fprintf(b, "#### Subcommands\n\n")
@@ -178,17 +170,62 @@ func writeMarkdownFlags(b *strings.Builder, title string, flags []FlagSpec) {
 	fmt.Fprintln(b)
 }
 
+func writeMarkdownPositionals(b *strings.Builder, title string, positionals []PositionalSpec) {
+	fmt.Fprintf(b, "%s\n\n", title)
+	for _, positional := range positionals {
+		fmt.Fprintf(b, "- `%s`", positional.Name)
+		if positional.Required {
+			fmt.Fprintf(b, " required")
+		}
+		if positional.Variadic {
+			fmt.Fprintf(b, " variadic")
+		}
+		if positional.Usage != "" {
+			fmt.Fprintf(b, " %s", positional.Usage)
+		}
+		if len(positional.Enum) > 0 {
+			fmt.Fprintf(b, " choices: `%s`", strings.Join(positional.Enum, "`, `"))
+		}
+		fmt.Fprintln(b)
+	}
+	fmt.Fprintln(b)
+}
+
+func writeMarkdownExamples(b *strings.Builder, title string, examples []string) {
+	fmt.Fprintf(b, "%s\n\n", title)
+	for _, example := range examples {
+		fmt.Fprintf(b, "- `%s`\n", example)
+	}
+	fmt.Fprintln(b)
+}
+
 func manDocs(spec AppSpec) string {
 	var b strings.Builder
 	date := time.Now().Format("2006-01-02")
 	fmt.Fprintf(&b, ".TH %s 1 %s\n", strings.ToUpper(spec.Name), date)
 	fmt.Fprintf(&b, ".SH NAME\n%s \\- %s\n", spec.Name, escapeMan(spec.Short))
-	fmt.Fprintf(&b, ".SH SYNOPSIS\n\\fB%s\\fR [flags] <command> [subcommand] [args]\n", spec.Name)
-	fmt.Fprintf(&b, ".SH DESCRIPTION\n%s\n", escapeMan(spec.Short))
+	if spec.Root != nil && spec.Root.UsageLine != "" {
+		fmt.Fprintf(&b, ".SH SYNOPSIS\n\\fB%s\\fR\n", escapeMan(spec.Root.UsageLine))
+	} else {
+		fmt.Fprintf(&b, ".SH SYNOPSIS\n\\fB%s\\fR [flags] <command> [subcommand] [args]\n", spec.Name)
+	}
+	description := spec.Short
+	if spec.Root != nil && spec.Root.Long != "" {
+		description = spec.Root.Long
+	}
+	fmt.Fprintf(&b, ".SH DESCRIPTION\n%s\n", escapeMan(description))
 
 	if len(spec.GlobalFlags) > 0 {
 		fmt.Fprintf(&b, ".SH GLOBAL FLAGS\n")
 		writeManFlags(&b, spec.GlobalFlags)
+	}
+	if spec.Root != nil && len(spec.Root.Positionals) > 0 {
+		fmt.Fprintf(&b, ".SH POSITIONAL ARGUMENTS\n")
+		writeManPositionals(&b, spec.Root.Positionals)
+	}
+	if spec.Root != nil && len(spec.Root.Examples) > 0 {
+		fmt.Fprintf(&b, ".SH EXAMPLES\n")
+		writeManExamples(&b, spec.Root.Examples)
 	}
 
 	if len(spec.Commands) > 0 {
@@ -216,26 +253,34 @@ func writeManCommand(b *strings.Builder, parent string, cmd CommandSpec) {
 	}
 	if len(cmd.Positionals) > 0 {
 		fmt.Fprintf(b, ".PP\nPositional arguments:\n")
-		for _, positional := range cmd.Positionals {
-			fmt.Fprintf(b, ".IP \\fB%s\\fR 4\n", escapeMan(positional.Name))
-			line := positional.Usage
-			if line == "" {
-				line = "argument"
-			}
-			if len(positional.Enum) > 0 {
-				line += " (choices: " + strings.Join(positional.Enum, ", ") + ")"
-			}
-			fmt.Fprintf(b, "%s\n", escapeMan(line))
-		}
+		writeManPositionals(b, cmd.Positionals)
 	}
 	if len(cmd.Examples) > 0 {
 		fmt.Fprintf(b, ".PP\nExamples:\n")
-		for _, example := range cmd.Examples {
-			fmt.Fprintf(b, ".IP \\[bu] 2\n\\fB%s\\fR\n", escapeMan(example))
-		}
+		writeManExamples(b, cmd.Examples)
 	}
 	for _, sub := range cmd.SubCommands {
 		writeManCommand(b, fullName, sub)
+	}
+}
+
+func writeManPositionals(b *strings.Builder, positionals []PositionalSpec) {
+	for _, positional := range positionals {
+		fmt.Fprintf(b, ".IP \\fB%s\\fR 4\n", escapeMan(positional.Name))
+		line := positional.Usage
+		if line == "" {
+			line = "argument"
+		}
+		if len(positional.Enum) > 0 {
+			line += " (choices: " + strings.Join(positional.Enum, ", ") + ")"
+		}
+		fmt.Fprintf(b, "%s\n", escapeMan(line))
+	}
+}
+
+func writeManExamples(b *strings.Builder, examples []string) {
+	for _, example := range examples {
+		fmt.Fprintf(b, ".IP \\[bu] 2\n\\fB%s\\fR\n", escapeMan(example))
 	}
 }
 
