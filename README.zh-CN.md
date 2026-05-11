@@ -148,6 +148,8 @@ cmd.Execute()
 - `SetUsageTemplate`
 - `Execute`
 
+这些入口只是共享 `DefaultApp` 实例上的一层薄包装，真实执行模型仍然是 `App + Root Command`。
+
 ### 2. 显式实例 `App`
 
 适合：
@@ -166,6 +168,17 @@ err := app.Run(context.Background(), []string{"hello", "team"})
 if err != nil {
 	// handle
 }
+```
+
+如果你希望继续使用显式实例，但不直接改字段，也可以用实例侧的薄包装方法：
+
+```go
+app := cmd.NewApp("myapp")
+app.ConfigureFlags(func(f *cmd.FlagSet) { ... })
+app.SetRootCommand(&cmd.Command{ ... })
+app.AddCommands(...)
+
+err := app.Execute([]string{"hello", "team"})
 ```
 
 ## 命令模型

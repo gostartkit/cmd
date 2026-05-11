@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
@@ -65,6 +66,77 @@ func TestAppRootRunWithoutArgs(t *testing.T) {
 	}
 	if len(capturedArgs) != 0 {
 		t.Fatalf("expected no root args, got %v", capturedArgs)
+	}
+}
+
+func TestAppInstanceHelpers(t *testing.T) {
+	app := NewApp("test")
+	var verbose bool
+	var ran bool
+
+	app.UseUsageTemplate("custom")
+	app.ConfigureFlags(func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	})
+	app.SetRootCommand(&Command{
+		Short: "root",
+	})
+	app.AddCommands(&Command{
+		Name: "version",
+		Run: func(ctx context.Context, cmd *Command, args []string) error {
+			ran = true
+			return nil
+		},
+	})
+
+	if app.UsageTemplate != "custom" {
+		t.Fatalf("expected usage template to be updated, got %q", app.UsageTemplate)
+	}
+	if app.Root == nil || app.Root.Short != "root" {
+		t.Fatalf("expected root command to be assigned, got %+v", app.Root)
+	}
+	if len(app.Commands) != 1 || app.Commands[0].Name != "version" {
+		t.Fatalf("expected commands to be appended, got %+v", app.Commands)
+	}
+
+	app.Err = &bytes.Buffer{}
+	if err := app.Execute([]string{"--verbose", "version"}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !verbose || !ran {
+		t.Fatalf("expected helper-configured app to run, verbose=%v ran=%v", verbose, ran)
+	}
+}
+
+func TestDefaultAppGlobalHelpersForwardToInstance(t *testing.T) {
+	previous := DefaultApp
+	defer func() {
+		DefaultApp = previous
+	}()
+
+	DefaultApp = NewApp("test")
+	var verbose bool
+
+	SetUsageTemplate("custom")
+	SetFlags(func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	})
+	AddCommands(&Command{Name: "version"})
+
+	if DefaultApp.UsageTemplate != "custom" {
+		t.Fatalf("expected global usage template helper to forward to DefaultApp, got %q", DefaultApp.UsageTemplate)
+	}
+	if DefaultApp.SetFlags == nil {
+		t.Fatal("expected global flag helper to set DefaultApp flags")
+	}
+	if len(DefaultApp.Commands) != 1 || DefaultApp.Commands[0].Name != "version" {
+		t.Fatalf("expected global add commands helper to append to DefaultApp, got %+v", DefaultApp.Commands)
+	}
+
+	flagSet := NewFlagSet("test", ContinueOnError)
+	DefaultApp.SetFlags(flagSet)
+	if flag, ok := flagSet.Lookup("verbose"); !ok || flag == nil {
+		t.Fatalf("expected forwarded DefaultApp flags to register verbose, got %+v", flag)
 	}
 }
 
@@ -270,6 +342,113 @@ func TestAppBackwardCompatibilityWithoutRoot(t *testing.T) {
 	}
 	if !ran || !verbose {
 		t.Fatalf("expected legacy App.Commands/App.SetFlags flow to keep working, ran=%v verbose=%v", ran, verbose)
+	}
+}
+
+func BenchmarkAppRunWithRootFlagsAndSubcommand(b *testing.B) {
+	app := NewApp("test")
+	app.Out = io.Discard
+	app.Err = io.Discard
+
+	var verbose bool
+	var profile string
+	app.SetFlags = func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+	app.Root = &Command{
+		SetFlags: func(f *FlagSet) {
+			f.StringVar(&profile, "profile", "", "profile name", "p")
+		},
+		SubCommands: []*Command{
+			{
+				Name: "version",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := app.Run(context.Background(), []string{"--verbose", "--profile", "dev", "version"}); err != nil {
+			b.Fatalf("run failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkAppCompleteWithRootFlags(b *testing.B) {
+	app := NewApp("test")
+	var verbose bool
+	var profile string
+	app.SetFlags = func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+	app.Root = &Command{
+		SetFlags: func(f *FlagSet) {
+			f.StringVar(&profile, "profile", "", "profile name", "p")
+		},
+		SubCommands: []*Command{
+			{Name: "version"},
+			{Name: "server"},
+			{Name: "status"},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = app.complete([]string{"--verbose", ""})
+	}
+}
+
+func BenchmarkAppHelpNestedSubcommand(b *testing.B) {
+	app := NewApp("test")
+	app.Out = io.Discard
+	app.Err = io.Discard
+	app.Root = &Command{
+		SubCommands: []*Command{
+			{
+				Name: "admin",
+				SubCommands: []*Command{
+					{
+						Name: "users",
+						SetFlags: func(f *FlagSet) {
+							var format string
+							f.StringVar(&format, "format", "", "output format", "f")
+						},
+						Run: func(ctx context.Context, cmd *Command, args []string) error {
+							return nil
+						},
+					},
+				},
+			},
+		},
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := app.Run(context.Background(), []string{"help", "admin", "users"}); err != nil {
+			b.Fatalf("help failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkFindCommandDeepTree(b *testing.B) {
+	leaf := &Command{Name: "leaf"}
+	level2 := &Command{Name: "level2", SubCommands: []*Command{leaf}}
+	level1 := &Command{Name: "level1", SubCommands: []*Command{level2}}
+	root := Commands{level1}
+	args := []string{"level1", "level2", "leaf"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd, remaining, err := findCommand(root, args)
+		if err != nil {
+			b.Fatalf("find command failed: %v", err)
+		}
+		if cmd != leaf || len(remaining) != 0 {
+			b.Fatalf("unexpected result cmd=%v remaining=%v", cmd, remaining)
+		}
 	}
 }
 

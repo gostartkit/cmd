@@ -121,11 +121,12 @@ func (a *App) runSpec(args []string) error {
 
 func (a *App) Spec() AppSpec {
 	root := a.rootCommand()
+	rootFlags := a.newRootFlagSetFor(root, io.Discard)
 	spec := AppSpec{
 		SchemaVersion: "v2",
 		Name:          a.Name,
 		Short:         root.Short,
-		Builtins:      a.builtinSpecs(),
+		Builtins:      a.builtinSpecsForCommands(root.SubCommands),
 		Capabilities: CapabilitySpec{
 			GlobalFlags:        true,
 			InterspersedFlags:  true,
@@ -159,23 +160,23 @@ func (a *App) Spec() AppSpec {
 		spec.Config.Shorthand = a.ConfigFlag.Shorthand
 		spec.Config.EnvVars = append([]string(nil), a.ConfigFlag.EnvVars...)
 	}
-	if rootFlags := a.newRootFlagSet(); rootFlags != nil {
+	if rootFlags != nil {
 		spec.GlobalFlags = flagSetSpec(rootFlags)
 	}
-	rootSpec := a.commandSpec(root)
+	rootSpec := a.commandSpec(root, root, rootFlags)
 	rootSpec.Name = a.Name
 	rootSpec.Flags = append([]FlagSpec(nil), spec.GlobalFlags...)
 	spec.Root = &rootSpec
 	for _, command := range root.SubCommands {
-		spec.Commands = append(spec.Commands, a.commandSpec(command))
+		spec.Commands = append(spec.Commands, a.commandSpec(root, command, rootFlags))
 	}
 	return spec
 }
 
-func (a *App) commandSpec(cmd *Command) CommandSpec {
+func (a *App) commandSpec(root *Command, cmd *Command, rootFlags *FlagSet) CommandSpec {
 	spec := CommandSpec{
 		Name:          cmd.Name,
-		Aliases:       append([]string(nil), cmd.Aliases...),
+		Aliases:       cmd.Aliases,
 		UsageLine:     cmd.UsageLine,
 		Short:         cmd.Short,
 		Long:          cmd.Long,
@@ -190,13 +191,13 @@ func (a *App) commandSpec(cmd *Command) CommandSpec {
 		Extensions:    cloneExtensions(cmd.Extensions),
 		Positionals:   positionalSpecs(cmd.Positionals),
 	}
-	if localFlags := a.newCommandFlagSet(cmd); localFlags != nil {
+	if localFlags := a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard); localFlags != nil {
 		spec.Flags = flagSetSpec(localFlags)
 	}
 	if len(cmd.SubCommands) > 0 {
 		spec.SubCommands = make([]CommandSpec, 0, len(cmd.SubCommands))
 		for _, subCommand := range cmd.SubCommands {
-			spec.SubCommands = append(spec.SubCommands, a.commandSpec(subCommand))
+			spec.SubCommands = append(spec.SubCommands, a.commandSpec(root, subCommand, rootFlags))
 		}
 	}
 	return spec
@@ -273,16 +274,40 @@ func hookSpec(before BeforeHook, after AfterHook, onError ErrorHook) HookSpec {
 }
 
 func (a *App) builtinSpecs() []string {
-	commands := a.rootSubCommands()
-	builtins := []string{"help"}
+	return a.builtinSpecsForCommands(a.rootSubCommands())
+}
+
+func (a *App) builtinSpecsForCommands(commands Commands) []string {
+	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
+
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+
+	if sig == a.cachedBuiltinSpecsSig && a.cachedBuiltinSpecsOK {
+		return a.cachedBuiltinSpecs
+	}
+
+	builtins := builtinSpecsFor(commands)
+	a.cachedBuiltinSpecs = builtins
+	a.cachedBuiltinSpecsSig = sig
+	a.cachedBuiltinSpecsOK = true
+	return builtins
+}
+
+func builtinSpecsFor(commands Commands) []string {
+	return appendBuiltinSpecsFor(nil, commands)
+}
+
+func appendBuiltinSpecsFor(dst []string, commands Commands) []string {
+	dst = append(dst, "help")
 	if commands.Search("completion") == nil {
-		builtins = append(builtins, "completion")
+		dst = append(dst, "completion")
 	}
 	if commands.Search("spec") == nil {
-		builtins = append(builtins, "spec")
+		dst = append(dst, "spec")
 	}
 	if commands.Search("docs") == nil {
-		builtins = append(builtins, "docs")
+		dst = append(dst, "docs")
 	}
-	return builtins
+	return dst
 }

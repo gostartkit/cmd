@@ -147,7 +147,7 @@ func positionalValueCompletions(app *App, command *Command, positional *Position
 			Current:    current,
 		})...)
 	}
-	return filterPrefix(uniqueSortedStrings(values), current)
+	return uniqueSortedPrefixStrings(values, current)
 }
 
 func containsString(values []string, target string) bool {

@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,10 +63,19 @@ type App struct {
 	Observers     []Observer
 	Extensions    map[string]any
 
-	mu         sync.Mutex
-	exitStatus int
-	flag       *FlagSet
-	configData map[string]any
+	mu          sync.Mutex
+	cacheMu     sync.Mutex
+	exitStatus  int
+	flag        *FlagSet
+	configData  map[string]any
+	currentRoot *Command
+
+	cachedRootSubCommands    Commands
+	cachedRootSubCommandsSig commandsCacheSig
+	cachedRootSubCommandsOK  bool
+	cachedBuiltinSpecs       []string
+	cachedBuiltinSpecsSig    commandsCacheSig
+	cachedBuiltinSpecsOK     bool
 }
 
 // NewApp creates a new App instance
@@ -195,6 +205,18 @@ func cloneFlag(flag *Flag) *Flag {
 	}
 }
 
+func cloneFlagSetDefinition(src *FlagSet, name string, output io.Writer) *FlagSet {
+	flagSet := NewFlagSet(name, ContinueOnError)
+	flagSet.SetOutput(output)
+	if src == nil || len(src.formal) == 0 {
+		return flagSet
+	}
+
+	flagSet.formal = append(make([]*Flag, 0, len(src.formal)), src.formal...)
+	flagSet.sorted = src.sorted
+	return flagSet
+}
+
 // Command struct
 type Command struct {
 	Name        string
@@ -278,40 +300,80 @@ type Commands []*Command
 
 // Search use binary search to find and return the smallest index *Command
 func (c *Commands) Search(name string) *Command {
-
+	var aliasMatch *Command
 	for _, cmd := range *c {
+		if cmd == nil {
+			continue
+		}
 		if cmd.Name == name {
 			return cmd
 		}
-	}
-
-	for _, cmd := range *c {
-		if slices.Contains(cmd.Aliases, name) {
-			return cmd
+		if aliasMatch == nil && slices.Contains(cmd.Aliases, name) {
+			aliasMatch = cmd
 		}
 	}
 
-	return nil
+	return aliasMatch
+}
+
+// ConfigureFlags sets the app-level global flag registration function.
+func (a *App) ConfigureFlags(f func(f *FlagSet)) {
+	if a == nil {
+		return
+	}
+	a.SetFlags = f
+}
+
+// UseUsageTemplate replaces the app usage template.
+func (a *App) UseUsageTemplate(usageTemplate string) {
+	if a == nil {
+		return
+	}
+	a.UsageTemplate = usageTemplate
+}
+
+// AddCommands appends top-level commands to the app.
+func (a *App) AddCommands(cmds ...*Command) {
+	if a == nil || len(cmds) == 0 {
+		return
+	}
+	a.Commands = append(a.Commands, cmds...)
+}
+
+// SetRootCommand assigns the app root command.
+func (a *App) SetRootCommand(root *Command) {
+	if a == nil {
+		return
+	}
+	a.Root = root
+}
+
+// Execute runs the app with the provided args.
+func (a *App) Execute(args []string) error {
+	if a == nil {
+		return nil
+	}
+	return a.Run(context.Background(), args)
 }
 
 // SetUsageTemplate set value to usageTemplate
 func SetUsageTemplate(usageTemplate string) {
-	DefaultApp.UsageTemplate = usageTemplate
+	DefaultApp.UseUsageTemplate(usageTemplate)
 }
 
 // SetFlags set flags to all commands
 func SetFlags(f func(f *FlagSet)) {
-	DefaultApp.SetFlags = f
+	DefaultApp.ConfigureFlags(f)
 }
 
 // AddCommands Add Command.
 func AddCommands(cmds ...*Command) {
-	DefaultApp.Commands = append(DefaultApp.Commands, cmds...)
+	DefaultApp.AddCommands(cmds...)
 }
 
 // Execute func
 func Execute() {
-	if err := DefaultApp.Run(context.Background(), os.Args[1:]); err != nil {
+	if err := DefaultApp.Execute(os.Args[1:]); err != nil {
 		fmt.Fprintf(DefaultApp.Err, "Error: %v\n", err)
 		os.Exit(DefaultApp.ExitStatus())
 	}
@@ -319,52 +381,72 @@ func Execute() {
 }
 
 func (a *App) rootCommand() *Command {
+	if a.currentRoot != nil {
+		return a.currentRoot
+	}
+
+	subCommands := a.rootSubCommands()
 	root := &Command{
 		Name:        a.Name,
-		UsageLine:   a.defaultRootUsageLine(),
+		UsageLine:   a.defaultRootUsageLine(subCommands),
 		Short:       a.Short,
 		Long:        a.Long,
-		SubCommands: a.rootSubCommands(),
+		SubCommands: subCommands,
 		app:         a,
 	}
 	if a.Root == nil {
 		return root
 	}
 
-	root.Aliases = append([]string(nil), a.Root.Aliases...)
-	if a.Root.UsageLine != "" {
-		root.UsageLine = a.Root.UsageLine
+	*root = *a.Root
+	root.Name = a.Name
+	root.Short = a.Root.Short
+	if root.Short == "" {
+		root.Short = a.Short
 	}
-	if a.Root.Short != "" {
-		root.Short = a.Root.Short
+	root.Long = a.Root.Long
+	if root.Long == "" {
+		root.Long = a.Long
 	}
-	if a.Root.Long != "" {
-		root.Long = a.Root.Long
+	root.UsageLine = a.Root.UsageLine
+	if root.UsageLine == "" {
+		root.UsageLine = a.defaultRootUsageLine(subCommands)
 	}
-	root.Group = a.Root.Group
-	root.Examples = append([]string(nil), a.Root.Examples...)
-	root.Positionals = clonePositionals(a.Root.Positionals)
-	root.Deprecated = a.Root.Deprecated
-	root.Hidden = a.Root.Hidden
-	root.BeforeRun = a.Root.BeforeRun
-	root.AfterRun = a.Root.AfterRun
-	root.OnError = a.Root.OnError
-	root.Middlewares = append([]Middleware(nil), a.Root.Middlewares...)
-	root.Observers = append([]Observer(nil), a.Root.Observers...)
-	root.Extensions = cloneExtensions(a.Root.Extensions)
-	root.Run = a.Root.Run
-	root.SetFlags = a.Root.SetFlags
-	if len(a.Root.SubCommands) > 0 {
-		root.SubCommands = mergeCommands(a.Root.SubCommands, a.Commands)
-	}
+	root.SubCommands = subCommands
+	root.alias = ""
+	root.flag = nil
+	root.app = a
 	return root
 }
 
 func (a *App) rootSubCommands() Commands {
-	if a.Root == nil {
-		return a.Commands
+	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
+
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+
+	if sig == a.cachedRootSubCommandsSig && a.cachedRootSubCommandsOK {
+		return a.cachedRootSubCommands
 	}
-	return mergeCommands(a.Root.SubCommands, a.Commands)
+
+	var subCommands Commands
+	if a.Root == nil {
+		subCommands = a.Commands
+	} else {
+		subCommands = mergeCommands(a.Root.SubCommands, a.Commands)
+	}
+
+	a.cachedRootSubCommands = subCommands
+	a.cachedRootSubCommandsSig = sig
+	a.cachedRootSubCommandsOK = true
+	return subCommands
+}
+
+func (a *App) rootSubCommandsSource() Commands {
+	if a.Root == nil {
+		return nil
+	}
+	return a.Root.SubCommands
 }
 
 func mergeCommands(primary Commands, secondary Commands) Commands {
@@ -376,47 +458,27 @@ func mergeCommands(primary Commands, secondary Commands) Commands {
 	}
 
 	merged := make(Commands, 0, len(primary)+len(secondary))
-	seen := make(map[string]struct{}, len(primary)+len(secondary))
-	appendUnique := func(commands Commands) {
-		for _, cmd := range commands {
-			if cmd == nil {
-				continue
-			}
-			if _, exists := seen[cmd.Name]; exists {
-				continue
-			}
-			seen[cmd.Name] = struct{}{}
-			merged = append(merged, cmd)
+	merged = append(merged, primary...)
+	for _, cmd := range secondary {
+		if cmd == nil || commandsContainName(merged, cmd.Name) {
+			continue
 		}
+		merged = append(merged, cmd)
 	}
-	appendUnique(primary)
-	appendUnique(secondary)
 	return merged
 }
 
-func clonePositionals(positionals []PositionalArg) []PositionalArg {
-	if len(positionals) == 0 {
-		return nil
+func commandsContainName(commands Commands, name string) bool {
+	for _, cmd := range commands {
+		if cmd != nil && cmd.Name == name {
+			return true
+		}
 	}
-
-	cloned := make([]PositionalArg, 0, len(positionals))
-	for _, positional := range positionals {
-		cloned = append(cloned, PositionalArg{
-			Name:       positional.Name,
-			Usage:      positional.Usage,
-			Required:   positional.Required,
-			Variadic:   positional.Variadic,
-			Enum:       append([]string(nil), positional.Enum...),
-			Example:    positional.Example,
-			Completion: positional.Completion,
-			Extensions: cloneExtensions(positional.Extensions),
-		})
-	}
-	return cloned
+	return false
 }
 
-func (a *App) defaultRootUsageLine() string {
-	if len(a.rootSubCommands()) > 0 {
+func (a *App) defaultRootUsageLine(subCommands Commands) string {
+	if len(subCommands) > 0 {
 		return fmt.Sprintf("%s [flags] <command> [subcommand] [args]", a.Name)
 	}
 	return fmt.Sprintf("%s [flags] [args]", a.Name)
@@ -447,11 +509,13 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	a.configData = nil
 	a.exitStatus = 0
 	root := a.rootCommand()
+	a.currentRoot = root
+	defer func() {
+		a.currentRoot = nil
+	}()
 	if a.SetFlags != nil || a.configEnabled() || (root != nil && root.SetFlags != nil) {
-		a.flag = NewFlagSet(a.Name, ContinueOnError)
-		a.flag.SetOutput(a.Err)
+		a.flag = a.newRootFlagSetFor(root, a.Err)
 		a.flag.Usage = a.Usage
-		a.configureFlagSet(a.flag, root, root)
 	}
 
 	parsedAppFlags := []parsedFlagValue{}
@@ -515,9 +579,7 @@ func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args 
 	cmd.app = a
 	startTime := time.Now()
 
-	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
-	cmd.flag.SetOutput(a.Err)
-	a.configureFlagSet(cmd.flag, root, cmd)
+	cmd.flag = a.newCommandFlagSetFor(root, a.flag, cmd, a.Err)
 	cmd.flag.Usage = func() {
 		if cmd.Name == a.Name {
 			a.Usage()
@@ -566,7 +628,7 @@ func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args 
 		fmt.Fprintf(a.Err, "Warning: command %q is deprecated: %s\n", cmd.Name, cmd.Deprecated)
 	}
 
-	commandArgs := append([]string(nil), cmd.flag.Args()...)
+	commandArgs := cmd.flag.Args()
 	a.emitEvent(Event{
 		Type:      EventCommandStarted,
 		Command:   cmd,
@@ -588,8 +650,7 @@ func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args 
 	runFn := func(runCtx context.Context) error {
 		return cmd.Run(runCtx, cmd, commandArgs)
 	}
-	middlewares := append([]Middleware(nil), a.Middlewares...)
-	middlewares = append(middlewares, cmd.Middlewares...)
+	middlewares := joinMiddlewares(a.Middlewares, cmd.Middlewares)
 
 	if err := chainMiddlewares(middlewareCtx, runFn, middlewares); err != nil {
 		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindRuntime, 1)
@@ -606,6 +667,66 @@ func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args 
 		ExitCode:  a.ExitStatus(),
 	})
 	return nil
+}
+
+func joinMiddlewares(appMiddlewares []Middleware, commandMiddlewares []Middleware) []Middleware {
+	if len(appMiddlewares) == 0 {
+		return commandMiddlewares
+	}
+	if len(commandMiddlewares) == 0 {
+		return appMiddlewares
+	}
+
+	middlewares := make([]Middleware, 0, len(appMiddlewares)+len(commandMiddlewares))
+	middlewares = append(middlewares, appMiddlewares...)
+	middlewares = append(middlewares, commandMiddlewares...)
+	return middlewares
+}
+
+type commandsCacheSig struct {
+	rootPtr         uintptr
+	rootCommandsLen int
+	appCommandsLen  int
+	hash            uint64
+}
+
+func makeCommandsCacheSig(root *Command, rootCommands Commands, appCommands Commands) commandsCacheSig {
+	return commandsCacheSig{
+		rootPtr:         pointerOf(root),
+		rootCommandsLen: len(rootCommands),
+		appCommandsLen:  len(appCommands),
+		hash:            hashCommands(rootCommands) ^ (hashCommands(appCommands) << 1),
+	}
+}
+
+func hashCommands(commands Commands) uint64 {
+	var hash uint64 = 1469598103934665603
+	for _, cmd := range commands {
+		hash ^= uint64(pointerOf(cmd))
+		hash *= 1099511628211
+		if cmd == nil {
+			continue
+		}
+		hash ^= hashString64(cmd.Name)
+		hash *= 1099511628211
+	}
+	return hash
+}
+
+func hashString64(value string) uint64 {
+	var hash uint64 = 1469598103934665603
+	for i := 0; i < len(value); i++ {
+		hash ^= uint64(value[i])
+		hash *= 1099511628211
+	}
+	return hash
+}
+
+func pointerOf(value any) uintptr {
+	if value == nil {
+		return 0
+	}
+	return reflect.ValueOf(value).Pointer()
 }
 
 func (a *App) setExitStatus(n int) {
@@ -639,9 +760,9 @@ func (a *App) Usage() {
 		Long:        root.Long,
 		UsageLine:   root.UsageLine,
 		Commands:    root.SubCommands,
-		Aliases:     append([]string(nil), root.Aliases...),
-		Examples:    append([]string(nil), root.Examples...),
-		Positionals: clonePositionals(root.Positionals),
+		Aliases:     root.Aliases,
+		Examples:    root.Examples,
+		Positionals: root.Positionals,
 	}
 	bw := bufio.NewWriter(a.Err)
 	runTemplate(bw, a.UsageTemplate, data)
@@ -671,9 +792,8 @@ func (a *App) help(args []string) error {
 		return err
 	}
 	cmd.app = a
-	cmd.flag = NewFlagSet(cmd.Name, ContinueOnError)
-	cmd.flag.SetOutput(a.Err)
-	a.configureFlagSet(cmd.flag, root, cmd)
+	rootFlags := a.newRootFlagSetFor(root, a.Err)
+	cmd.flag = a.newCommandFlagSetFor(root, rootFlags, cmd, a.Err)
 	cmd.Usage()
 	return nil
 }

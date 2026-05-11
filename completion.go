@@ -85,6 +85,7 @@ func (a *App) runComplete(args []string) error {
 
 func (a *App) complete(args []string) []string {
 	root := a.rootCommand()
+	rootBuiltins := a.builtinSpecsForCommands(root.SubCommands)
 	current := ""
 	completed := args
 	if len(args) > 0 {
@@ -92,7 +93,7 @@ func (a *App) complete(args []string) []string {
 		completed = args[:len(args)-1]
 	}
 
-	rootFlags := a.newRootFlagSet()
+	rootFlags := a.newRootFlagSetFor(root, io.Discard)
 	currentFlags := rootFlags
 	currentCommands := root.SubCommands
 	var currentCommand *Command
@@ -128,7 +129,7 @@ func (a *App) complete(args []string) []string {
 			continue
 		}
 		currentCommand = cmd
-		currentFlags = a.newCommandFlagSet(cmd)
+		currentFlags = a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard)
 		currentCommands = cmd.SubCommands
 	}
 
@@ -148,11 +149,11 @@ func (a *App) complete(args []string) []string {
 
 	suggestions := make([]string, 0)
 	if current == "" {
-		suggestions = append(suggestions, commandCompletions(currentCommands)...)
+		suggestions = appendCommandCompletionValues(suggestions, currentCommands)
 		if currentCommand == nil {
-			suggestions = append(suggestions, a.builtinSpecs()...)
+			suggestions = append(suggestions, rootBuiltins...)
 		}
-		suggestions = append(suggestions, flagCompletions(currentFlags)...)
+		suggestions = appendFlagCompletionValues(suggestions, currentFlags)
 		target := currentCommand
 		if target == nil && root.Runnable() {
 			target = root
@@ -175,12 +176,12 @@ func (a *App) complete(args []string) []string {
 			}
 			return valueCompletions(a, valueCommand, flag, positionalArgs, attachedValue, prefix)
 		}
-		return filterPrefix(flagCompletions(currentFlags), current)
+		return uniqueSortedPrefixStrings(appendFlagCompletionValues(nil, currentFlags), current)
 	}
 
-	commandSuggestions := filterPrefix(commandCompletions(currentCommands), current)
+	commandSuggestions := uniqueSortedPrefixStrings(appendCommandCompletionValues(nil, currentCommands), current)
 	if currentCommand == nil {
-		commandSuggestions = append(commandSuggestions, filterPrefix(a.builtinSpecs(), current)...)
+		commandSuggestions = append(commandSuggestions, uniqueSortedPrefixStrings(append([]string(nil), rootBuiltins...), current)...)
 		commandSuggestions = uniqueSortedStrings(commandSuggestions)
 	}
 	if len(commandSuggestions) > 0 {
@@ -225,20 +226,30 @@ func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
 
 func (a *App) newRootFlagSet() *FlagSet {
 	root := a.rootCommand()
+	return a.newRootFlagSetFor(root, io.Discard)
+}
+
+func (a *App) newRootFlagSetFor(root *Command, output io.Writer) *FlagSet {
 	if a.SetFlags == nil && !a.configEnabled() && (root == nil || root.SetFlags == nil) {
 		return nil
 	}
 	flagSet := NewFlagSet(a.Name, ContinueOnError)
-	flagSet.SetOutput(io.Discard)
+	flagSet.SetOutput(output)
 	a.configureFlagSet(flagSet, root, root)
 	return flagSet
 }
 
 func (a *App) newCommandFlagSet(cmd *Command) *FlagSet {
 	root := a.rootCommand()
-	flagSet := NewFlagSet(cmd.Name, ContinueOnError)
-	flagSet.SetOutput(io.Discard)
-	a.configureFlagSet(flagSet, root, cmd)
+	rootFlags := a.newRootFlagSetFor(root, io.Discard)
+	return a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard)
+}
+
+func (a *App) newCommandFlagSetFor(root *Command, rootFlags *FlagSet, cmd *Command, output io.Writer) *FlagSet {
+	flagSet := cloneFlagSetDefinition(rootFlags, cmd.Name, output)
+	if cmd != root && cmd.SetFlags != nil {
+		cmd.SetFlags(flagSet)
+	}
 	return flagSet
 }
 
@@ -298,39 +309,15 @@ func parseCompletionFlag(flagSet *FlagSet, token string) (*Flag, bool, bool, str
 }
 
 func commandCompletions(commands Commands) []string {
-	suggestions := make([]string, 0)
-	for _, command := range commands {
-		if command.Hidden {
-			continue
-		}
-		suggestions = append(suggestions, command.Name)
-		for _, alias := range command.Aliases {
-			suggestions = append(suggestions, alias)
-		}
-	}
-	return uniqueSortedStrings(suggestions)
+	return uniqueSortedStrings(appendCommandCompletionValues(nil, commands))
 }
 
 func flagCompletions(flagSet *FlagSet) []string {
-	flags := visibleFlags(flagSet)
-	suggestions := make([]string, 0, len(flags)*2)
-	for _, flag := range flags {
-		if flag.Shorthand != "" {
-			suggestions = append(suggestions, "-"+flag.Shorthand)
-		}
-		suggestions = append(suggestions, "--"+flag.Name)
-	}
-	return uniqueSortedStrings(suggestions)
+	return uniqueSortedStrings(appendFlagCompletionValues(nil, flagSet))
 }
 
 func filterPrefix(values []string, prefix string) []string {
-	filtered := make([]string, 0, len(values))
-	for _, value := range values {
-		if strings.HasPrefix(value, prefix) {
-			filtered = append(filtered, value)
-		}
-	}
-	return uniqueSortedStrings(filtered)
+	return uniqueSortedPrefixStrings(values, prefix)
 }
 
 func valueCompletions(app *App, command *Command, flag *Flag, args []string, current string, prefix string) []string {
@@ -352,7 +339,7 @@ func valueCompletions(app *App, command *Command, flag *Flag, args []string, cur
 		})...)
 	}
 
-	values = filterPrefix(uniqueSortedStrings(values), current)
+	values = uniqueSortedPrefixStrings(values, current)
 	if prefix == "" {
 		return values
 	}
@@ -365,20 +352,65 @@ func valueCompletions(app *App, command *Command, flag *Flag, args []string, cur
 }
 
 func uniqueSortedStrings(values []string) []string {
-	unique := make([]string, 0, len(values))
-	seen := make(map[string]struct{}, len(values))
+	return uniqueSortedPrefixStrings(values, "")
+}
+
+func uniqueSortedPrefixStrings(values []string, prefix string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	filtered := values[:0]
 	for _, value := range values {
 		if value == "" {
 			continue
 		}
-		if _, ok := seen[value]; ok {
+		if prefix != "" && !strings.HasPrefix(value, prefix) {
 			continue
 		}
-		seen[value] = struct{}{}
-		unique = append(unique, value)
+		filtered = append(filtered, value)
 	}
-	slices.Sort(unique)
-	return unique
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	slices.Sort(filtered)
+	write := 1
+	for read := 1; read < len(filtered); read++ {
+		if filtered[read] == filtered[write-1] {
+			continue
+		}
+		filtered[write] = filtered[read]
+		write++
+	}
+	return filtered[:write]
+}
+
+func appendCommandCompletionValues(dst []string, commands Commands) []string {
+	for _, command := range commands {
+		if command == nil || command.Hidden {
+			continue
+		}
+		dst = append(dst, command.Name)
+		dst = append(dst, command.Aliases...)
+	}
+	return dst
+}
+
+func appendFlagCompletionValues(dst []string, flagSet *FlagSet) []string {
+	if flagSet == nil {
+		return dst
+	}
+	flagSet.VisitAll(func(flag *Flag) {
+		if flag.Hidden {
+			return
+		}
+		if flag.Shorthand != "" {
+			dst = append(dst, "-"+flag.Shorthand)
+		}
+		dst = append(dst, "--"+flag.Name)
+	})
+	return dst
 }
 
 func shellFuncName(name string) string {

@@ -148,6 +148,8 @@ Global entry points:
 - `SetUsageTemplate`
 - `Execute`
 
+These helpers are only thin wrappers around the shared `DefaultApp` instance. The real execution model is still `App + Root Command`.
+
 ### 2. Explicit instance: `App`
 
 Use this when you need:
@@ -166,6 +168,17 @@ err := app.Run(context.Background(), []string{"hello", "team"})
 if err != nil {
 	// handle
 }
+```
+
+If you want to stay on instance-style APIs without mutating fields directly, the app also provides thin helpers:
+
+```go
+app := cmd.NewApp("myapp")
+app.ConfigureFlags(func(f *cmd.FlagSet) { ... })
+app.SetRootCommand(&cmd.Command{ ... })
+app.AddCommands(...)
+
+err := app.Execute([]string{"hello", "team"})
 ```
 
 ## Command Model
