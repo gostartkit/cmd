@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
 )
 
 type AppSpec struct {
@@ -122,6 +123,7 @@ func (a *App) runSpec(args []string) error {
 func (a *App) Spec() AppSpec {
 	root := a.rootCommand()
 	rootFlags := a.newRootFlagSetFor(root, io.Discard)
+	var globalFlagSpecs []FlagSpec
 	spec := AppSpec{
 		SchemaVersion: "v2",
 		Name:          a.Name,
@@ -161,19 +163,19 @@ func (a *App) Spec() AppSpec {
 		spec.Config.EnvVars = append([]string(nil), a.ConfigFlag.EnvVars...)
 	}
 	if rootFlags != nil {
-		spec.GlobalFlags = flagSetSpec(rootFlags)
+		globalFlagSpecs = flagSetSpec(rootFlags)
+		spec.GlobalFlags = globalFlagSpecs
 	}
-	rootSpec := a.commandSpec(root, root, rootFlags)
+	rootSpec := a.commandSpec(root, root, globalFlagSpecs)
 	rootSpec.Name = a.Name
-	rootSpec.Flags = append([]FlagSpec(nil), spec.GlobalFlags...)
 	spec.Root = &rootSpec
 	for _, command := range root.SubCommands {
-		spec.Commands = append(spec.Commands, a.commandSpec(root, command, rootFlags))
+		spec.Commands = append(spec.Commands, a.commandSpec(root, command, globalFlagSpecs))
 	}
 	return spec
 }
 
-func (a *App) commandSpec(root *Command, cmd *Command, rootFlags *FlagSet) CommandSpec {
+func (a *App) commandSpec(root *Command, cmd *Command, globalFlagSpecs []FlagSpec) CommandSpec {
 	spec := CommandSpec{
 		Name:          cmd.Name,
 		Aliases:       cmd.Aliases,
@@ -191,16 +193,54 @@ func (a *App) commandSpec(root *Command, cmd *Command, rootFlags *FlagSet) Comma
 		Extensions:    cloneExtensions(cmd.Extensions),
 		Positionals:   positionalSpecs(cmd.Positionals),
 	}
-	if localFlags := a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard); localFlags != nil {
-		spec.Flags = flagSetSpec(localFlags)
+	if cmd == root {
+		if len(globalFlagSpecs) > 0 {
+			spec.Flags = append([]FlagSpec(nil), globalFlagSpecs...)
+		}
+	} else {
+		spec.Flags = mergeCommandFlagSpecs(globalFlagSpecs, a.localCommandFlagSpecs(cmd))
 	}
 	if len(cmd.SubCommands) > 0 {
 		spec.SubCommands = make([]CommandSpec, 0, len(cmd.SubCommands))
 		for _, subCommand := range cmd.SubCommands {
-			spec.SubCommands = append(spec.SubCommands, a.commandSpec(root, subCommand, rootFlags))
+			spec.SubCommands = append(spec.SubCommands, a.commandSpec(root, subCommand, globalFlagSpecs))
 		}
 	}
 	return spec
+}
+
+func (a *App) localCommandFlagSpecs(cmd *Command) []FlagSpec {
+	if cmd == nil || cmd.SetFlags == nil {
+		return nil
+	}
+	flagSet := NewFlagSet(cmd.Name, ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	cmd.SetFlags(flagSet)
+	return flagSetSpec(flagSet)
+}
+
+func mergeCommandFlagSpecs(global []FlagSpec, local []FlagSpec) []FlagSpec {
+	switch {
+	case len(global) == 0:
+		return local
+	case len(local) == 0:
+		return append([]FlagSpec(nil), global...)
+	}
+
+	merged := make([]FlagSpec, 0, len(global)+len(local))
+	i, j := 0, 0
+	for i < len(global) && j < len(local) {
+		if strings.Compare(global[i].Name, local[j].Name) <= 0 {
+			merged = append(merged, global[i])
+			i++
+			continue
+		}
+		merged = append(merged, local[j])
+		j++
+	}
+	merged = append(merged, global[i:]...)
+	merged = append(merged, local[j:]...)
+	return merged
 }
 
 func positionalSpecs(positionals []PositionalArg) []PositionalSpec {
@@ -224,7 +264,7 @@ func positionalSpecs(positionals []PositionalArg) []PositionalSpec {
 }
 
 func flagSetSpec(flagSet *FlagSet) []FlagSpec {
-	flags := make([]FlagSpec, 0)
+	flags := make([]FlagSpec, 0, len(flagSet.formal))
 	flagSet.VisitAll(func(flag *Flag) {
 		flags = append(flags, flagSpec(flag))
 	})

@@ -15,25 +15,24 @@ func (a *App) runBuiltinCommand(args []string) (bool, error) {
 		return false, nil
 	}
 
-	commands := a.rootSubCommands()
 	switch args[0] {
 	case "completion":
-		if commands.Search("completion") != nil {
+		if a.searchTopLevelCommand("completion") != nil {
 			return false, nil
 		}
 		return true, a.runCompletion(args[1:])
 	case "spec":
-		if commands.Search("spec") != nil {
+		if a.searchTopLevelCommand("spec") != nil {
 			return false, nil
 		}
 		return true, a.runSpec(args[1:])
 	case "docs":
-		if commands.Search("docs") != nil {
+		if a.searchTopLevelCommand("docs") != nil {
 			return false, nil
 		}
 		return true, a.runDocs(args[1:])
 	case "__complete":
-		if commands.Search("__complete") != nil {
+		if a.searchTopLevelCommand("__complete") != nil {
 			return false, nil
 		}
 		return true, a.runComplete(args[1:])
@@ -97,6 +96,7 @@ func (a *App) complete(args []string) []string {
 	currentFlags := rootFlags
 	currentCommands := root.SubCommands
 	var currentCommand *Command
+	var currentOwner *Command
 	var expectingValue *Flag
 	afterDoubleDash := false
 	positionalArgs := make([]string, 0)
@@ -123,12 +123,22 @@ func (a *App) complete(args []string) []string {
 			}
 		}
 
-		cmd := currentCommands.Search(token)
+		var cmd *Command
+		if currentOwner != nil {
+			cmd = currentOwner.searchSubCommand(token)
+		} else {
+			if len(currentCommands) < indexedCommandLookupThreshold {
+				cmd = currentCommands.Search(token)
+			} else {
+				cmd = a.searchTopLevelCommand(token)
+			}
+		}
 		if cmd == nil {
 			positionalArgs = append(positionalArgs, token)
 			continue
 		}
 		currentCommand = cmd
+		currentOwner = cmd
 		currentFlags = a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard)
 		currentCommands = cmd.SubCommands
 	}

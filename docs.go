@@ -12,6 +12,7 @@ import (
 )
 
 var errDocsUsage = errors.New("docs format must be one of: markdown, man")
+var manEscaper = strings.NewReplacer(`\`, `\\`, "-", `\-`)
 
 func (a *App) runDocs(args []string) error {
 	out := a.Out
@@ -45,6 +46,7 @@ func (a *App) runDocs(args []string) error {
 
 func markdownDocs(spec AppSpec) string {
 	var b strings.Builder
+	b.Grow(estimateMarkdownDocSize(spec))
 	writeMarkdownFrontMatter(&b, appFrontMatter(spec))
 	fmt.Fprintf(&b, "# %s\n\n", spec.Name)
 	if spec.Short != "" {
@@ -90,8 +92,8 @@ func markdownDocs(spec AppSpec) string {
 }
 
 func writeMarkdownCommand(b *strings.Builder, parent string, cmd CommandSpec, level int, subcommandPath func(CommandSpec) string) {
-	header := strings.Repeat("#", level)
-	fullName := strings.TrimSpace(parent + " " + cmd.Name)
+	header := markdownHeader(level)
+	fullName := commandFullName(parent, cmd.Name)
 	if level == 1 {
 		writeMarkdownFrontMatter(b, commandFrontMatter(fullName, cmd))
 	}
@@ -136,36 +138,52 @@ func writeMarkdownCommand(b *strings.Builder, parent string, cmd CommandSpec, le
 func writeMarkdownFlags(b *strings.Builder, title string, flags []FlagSpec) {
 	fmt.Fprintf(b, "%s\n\n", title)
 	for _, flag := range flags {
-		fmt.Fprintf(b, "- `--%s`", flag.Name)
+		b.WriteString("- `--")
+		b.WriteString(flag.Name)
+		b.WriteByte('`')
 		if flag.Shorthand != "" {
-			fmt.Fprintf(b, " / `-%s`", flag.Shorthand)
+			b.WriteString(" / `-")
+			b.WriteString(flag.Shorthand)
+			b.WriteByte('`')
 		}
 		if flag.Type != "" {
-			fmt.Fprintf(b, " <%s>", flag.Type)
+			b.WriteString(" <")
+			b.WriteString(flag.Type)
+			b.WriteByte('>')
 		}
 		if flag.Usage != "" {
-			fmt.Fprintf(b, " %s", flag.Usage)
+			b.WriteByte(' ')
+			b.WriteString(flag.Usage)
 		}
-		notes := make([]string, 0)
+		hasNote := false
+		writeNote := func(label string) {
+			if !hasNote {
+				b.WriteString(" (")
+				hasNote = true
+			} else {
+				b.WriteString("; ")
+			}
+			b.WriteString(label)
+		}
 		if flag.Required {
-			notes = append(notes, "required")
+			writeNote("required")
 		}
 		if flag.Default != "" {
-			notes = append(notes, "default: "+flag.Default)
+			writeNote("default: " + flag.Default)
 		}
 		if len(flag.Enum) > 0 {
-			notes = append(notes, "choices: "+strings.Join(flag.Enum, ", "))
+			writeNote("choices: " + strings.Join(flag.Enum, ", "))
 		}
 		if len(flag.EnvVars) > 0 {
-			notes = append(notes, "env: "+strings.Join(flag.EnvVars, ", "))
+			writeNote("env: " + strings.Join(flag.EnvVars, ", "))
 		}
 		if len(flag.ConfigKeys) > 0 {
-			notes = append(notes, "config: "+strings.Join(flag.ConfigKeys, ", "))
+			writeNote("config: " + strings.Join(flag.ConfigKeys, ", "))
 		}
-		if len(notes) > 0 {
-			fmt.Fprintf(b, " (%s)", strings.Join(notes, "; "))
+		if hasNote {
+			b.WriteByte(')')
 		}
-		fmt.Fprintln(b)
+		b.WriteByte('\n')
 	}
 	fmt.Fprintln(b)
 }
@@ -173,20 +191,25 @@ func writeMarkdownFlags(b *strings.Builder, title string, flags []FlagSpec) {
 func writeMarkdownPositionals(b *strings.Builder, title string, positionals []PositionalSpec) {
 	fmt.Fprintf(b, "%s\n\n", title)
 	for _, positional := range positionals {
-		fmt.Fprintf(b, "- `%s`", positional.Name)
+		b.WriteString("- `")
+		b.WriteString(positional.Name)
+		b.WriteByte('`')
 		if positional.Required {
-			fmt.Fprintf(b, " required")
+			b.WriteString(" required")
 		}
 		if positional.Variadic {
-			fmt.Fprintf(b, " variadic")
+			b.WriteString(" variadic")
 		}
 		if positional.Usage != "" {
-			fmt.Fprintf(b, " %s", positional.Usage)
+			b.WriteByte(' ')
+			b.WriteString(positional.Usage)
 		}
 		if len(positional.Enum) > 0 {
-			fmt.Fprintf(b, " choices: `%s`", strings.Join(positional.Enum, "`, `"))
+			b.WriteString(" choices: `")
+			b.WriteString(strings.Join(positional.Enum, "`, `"))
+			b.WriteByte('`')
 		}
-		fmt.Fprintln(b)
+		b.WriteByte('\n')
 	}
 	fmt.Fprintln(b)
 }
@@ -194,13 +217,42 @@ func writeMarkdownPositionals(b *strings.Builder, title string, positionals []Po
 func writeMarkdownExamples(b *strings.Builder, title string, examples []string) {
 	fmt.Fprintf(b, "%s\n\n", title)
 	for _, example := range examples {
-		fmt.Fprintf(b, "- `%s`\n", example)
+		b.WriteString("- `")
+		b.WriteString(example)
+		b.WriteString("`\n")
 	}
 	fmt.Fprintln(b)
 }
 
+func estimateMarkdownDocSize(spec AppSpec) int {
+	size := len(spec.Name) + len(spec.Short) + 512
+	if spec.Root != nil {
+		size += len(spec.Root.UsageLine) + len(spec.Root.Long)
+		size += len(spec.Root.Positionals) * 48
+		size += len(spec.Root.Examples) * 24
+	}
+	size += len(spec.GlobalFlags) * 80
+	for _, cmd := range spec.Commands {
+		size += estimateMarkdownCommandSize(cmd, len(spec.Name)+1)
+	}
+	return size
+}
+
+func estimateMarkdownCommandSize(cmd CommandSpec, parentLen int) int {
+	size := parentLen + len(cmd.Name) + len(cmd.Short) + len(cmd.Long) + len(cmd.UsageLine) + 192
+	size += len(cmd.Aliases) * 12
+	size += len(cmd.Flags) * 80
+	size += len(cmd.Positionals) * 48
+	size += len(cmd.Examples) * 24
+	for _, sub := range cmd.SubCommands {
+		size += estimateMarkdownCommandSize(sub, parentLen+len(cmd.Name)+1)
+	}
+	return size
+}
+
 func manDocs(spec AppSpec) string {
 	var b strings.Builder
+	b.Grow(estimateManDocSize(spec))
 	date := time.Now().Format("2006-01-02")
 	fmt.Fprintf(&b, ".TH %s 1 %s\n", strings.ToUpper(spec.Name), date)
 	fmt.Fprintf(&b, ".SH NAME\n%s \\- %s\n", spec.Name, escapeMan(spec.Short))
@@ -239,7 +291,7 @@ func manDocs(spec AppSpec) string {
 }
 
 func writeManCommand(b *strings.Builder, parent string, cmd CommandSpec) {
-	fullName := strings.TrimSpace(parent + " " + cmd.Name)
+	fullName := commandFullName(parent, cmd.Name)
 	fmt.Fprintf(b, ".SS %s\n", escapeMan(fullName))
 	if cmd.Short != "" {
 		fmt.Fprintf(b, "%s\n", escapeMan(cmd.Short))
@@ -284,6 +336,31 @@ func writeManExamples(b *strings.Builder, examples []string) {
 	}
 }
 
+func estimateManDocSize(spec AppSpec) int {
+	size := len(spec.Name) + len(spec.Short) + 256
+	if spec.Root != nil {
+		size += len(spec.Root.UsageLine) + len(spec.Root.Long)
+		size += len(spec.Root.Positionals) * 32
+		size += len(spec.Root.Examples) * 20
+	}
+	size += len(spec.GlobalFlags) * 64
+	for _, cmd := range spec.Commands {
+		size += estimateManCommandSize(cmd, len(spec.Name)+1)
+	}
+	return size
+}
+
+func estimateManCommandSize(cmd CommandSpec, parentLen int) int {
+	size := parentLen + len(cmd.Name) + len(cmd.Short) + len(cmd.Long) + len(cmd.UsageLine) + 128
+	size += len(cmd.Flags) * 64
+	size += len(cmd.Positionals) * 32
+	size += len(cmd.Examples) * 20
+	for _, sub := range cmd.SubCommands {
+		size += estimateManCommandSize(sub, parentLen+len(cmd.Name)+1)
+	}
+	return size
+}
+
 func writeManFlags(b *strings.Builder, flags []FlagSpec) {
 	for _, flag := range flags {
 		fmt.Fprintf(b, ".TP\n")
@@ -295,29 +372,44 @@ func writeManFlags(b *strings.Builder, flags []FlagSpec) {
 			fmt.Fprintf(b, " <%s>", escapeMan(flag.Type))
 		}
 		line := flag.Usage
-		notes := make([]string, 0)
-		if flag.Required {
-			notes = append(notes, "required")
-		}
-		if flag.Default != "" {
-			notes = append(notes, "default: "+flag.Default)
-		}
-		if len(flag.Enum) > 0 {
-			notes = append(notes, "choices: "+strings.Join(flag.Enum, ", "))
-		}
-		if len(notes) > 0 {
+		hasNote := false
+		appendNote := func(text string) {
 			if line != "" {
 				line += " "
 			}
-			line += "(" + strings.Join(notes, "; ") + ")"
+			line += text
+		}
+		if flag.Required {
+			if !hasNote {
+				appendNote("(required")
+				hasNote = true
+			}
+		}
+		if flag.Default != "" {
+			if !hasNote {
+				appendNote("(default: " + flag.Default)
+				hasNote = true
+			} else {
+				line += "; default: " + flag.Default
+			}
+		}
+		if len(flag.Enum) > 0 {
+			if !hasNote {
+				appendNote("(choices: " + strings.Join(flag.Enum, ", "))
+				hasNote = true
+			} else {
+				line += "; choices: " + strings.Join(flag.Enum, ", ")
+			}
+		}
+		if hasNote {
+			line += ")"
 		}
 		fmt.Fprintf(b, "%s\n", escapeMan(line))
 	}
 }
 
 func escapeMan(s string) string {
-	replacer := strings.NewReplacer(`\`, `\\`, "-", `\-`)
-	return replacer.Replace(s)
+	return manEscaper.Replace(s)
 }
 
 func writeMarkdownBundle(spec AppSpec, outputDir string) error {
@@ -427,6 +519,32 @@ func joinCommandPath(head string, tail []string) string {
 	parts := []string{head}
 	parts = append(parts, tail...)
 	return strings.Join(parts, " ")
+}
+
+func commandFullName(parent string, name string) string {
+	if parent == "" {
+		return name
+	}
+	return parent + " " + name
+}
+
+func markdownHeader(level int) string {
+	switch level {
+	case 1:
+		return "#"
+	case 2:
+		return "##"
+	case 3:
+		return "###"
+	case 4:
+		return "####"
+	case 5:
+		return "#####"
+	case 6:
+		return "######"
+	default:
+		return strings.Repeat("#", level)
+	}
 }
 
 func writeMarkdownFrontMatter(b *strings.Builder, data map[string]any) {

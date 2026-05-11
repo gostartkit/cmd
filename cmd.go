@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+	"unsafe"
 )
 
 var (
@@ -73,6 +73,8 @@ type App struct {
 	cachedRootSubCommands    Commands
 	cachedRootSubCommandsSig commandsCacheSig
 	cachedRootSubCommandsOK  bool
+	cachedRootCommandIndex   map[string]*Command
+	cachedRootCommandIndexOK bool
 	cachedBuiltinSpecs       []string
 	cachedBuiltinSpecsSig    commandsCacheSig
 	cachedBuiltinSpecsOK     bool
@@ -439,6 +441,10 @@ func (a *App) rootSubCommands() Commands {
 	a.cachedRootSubCommands = subCommands
 	a.cachedRootSubCommandsSig = sig
 	a.cachedRootSubCommandsOK = true
+	a.cachedRootCommandIndex = nil
+	a.cachedRootCommandIndexOK = false
+	a.cachedBuiltinSpecs = nil
+	a.cachedBuiltinSpecsOK = false
 	return subCommands
 }
 
@@ -495,6 +501,25 @@ func (a *App) shouldRunRoot(root *Command, remainingArgs []string) bool {
 		return true
 	}
 	return len(root.Positionals) > 0
+}
+
+func (a *App) searchTopLevelCommand(name string) *Command {
+	commands := a.rootSubCommands()
+	if len(commands) < indexedCommandLookupThreshold {
+		return (&commands).Search(name)
+	}
+	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
+
+	a.cacheMu.Lock()
+	if sig != a.cachedRootSubCommandsSig || !a.cachedRootCommandIndexOK {
+		a.cachedRootCommandIndex = buildCommandLookup(commands)
+		a.cachedRootCommandIndexOK = true
+		a.cachedRootSubCommandsSig = sig
+	}
+	index := a.cachedRootCommandIndex
+	a.cacheMu.Unlock()
+
+	return index[name]
 }
 
 // Run executes the application
@@ -558,7 +583,7 @@ func (a *App) Run(ctx context.Context, args []string) error {
 	}
 
 	name := remainingArgs[0]
-	cmd, remainingArgs, err := findCommand(root.SubCommands, remainingArgs)
+	cmd, remainingArgs, err := findCommand(a, nil, root.SubCommands, remainingArgs)
 
 	if err != nil {
 		if a.shouldRunRoot(root, remainingArgs) {
@@ -685,48 +710,109 @@ func joinMiddlewares(appMiddlewares []Middleware, commandMiddlewares []Middlewar
 
 type commandsCacheSig struct {
 	rootPtr         uintptr
+	rootCommandsPtr uintptr
 	rootCommandsLen int
+	appCommandsPtr  uintptr
 	appCommandsLen  int
-	hash            uint64
 }
+
+type commandLookupCache struct {
+	mu    sync.Mutex
+	sig   commandsCacheSig
+	index map[string]*Command
+	ok    bool
+}
+
+var nestedCommandLookupCaches sync.Map
+
+const indexedCommandLookupThreshold = 16
 
 func makeCommandsCacheSig(root *Command, rootCommands Commands, appCommands Commands) commandsCacheSig {
 	return commandsCacheSig{
-		rootPtr:         pointerOf(root),
+		rootPtr:         commandPointer(root),
+		rootCommandsPtr: sliceDataPointer(rootCommands),
 		rootCommandsLen: len(rootCommands),
+		appCommandsPtr:  sliceDataPointer(appCommands),
 		appCommandsLen:  len(appCommands),
-		hash:            hashCommands(rootCommands) ^ (hashCommands(appCommands) << 1),
 	}
 }
 
-func hashCommands(commands Commands) uint64 {
-	var hash uint64 = 1469598103934665603
+func commandPointer(cmd *Command) uintptr {
+	if cmd == nil {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(cmd))
+}
+
+func sliceDataPointer[T any](values []T) uintptr {
+	if len(values) == 0 {
+		return 0
+	}
+	return uintptr(unsafe.Pointer(unsafe.SliceData(values)))
+}
+
+func buildCommandLookup(commands Commands) map[string]*Command {
+	if len(commands) == 0 {
+		return nil
+	}
+
+	aliasCount := 0
 	for _, cmd := range commands {
-		hash ^= uint64(pointerOf(cmd))
-		hash *= 1099511628211
+		if cmd != nil {
+			aliasCount += len(cmd.Aliases)
+		}
+	}
+	index := make(map[string]*Command, len(commands)+aliasCount)
+	for _, cmd := range commands {
+		if cmd == nil || cmd.Name == "" {
+			continue
+		}
+		if _, exists := index[cmd.Name]; !exists {
+			index[cmd.Name] = cmd
+		}
+	}
+	for _, cmd := range commands {
 		if cmd == nil {
 			continue
 		}
-		hash ^= hashString64(cmd.Name)
-		hash *= 1099511628211
+		for _, alias := range cmd.Aliases {
+			if alias == "" {
+				continue
+			}
+			if _, exists := index[alias]; !exists {
+				index[alias] = cmd
+			}
+		}
 	}
-	return hash
+	return index
 }
 
-func hashString64(value string) uint64 {
-	var hash uint64 = 1469598103934665603
-	for i := 0; i < len(value); i++ {
-		hash ^= uint64(value[i])
-		hash *= 1099511628211
+func (c *Command) searchSubCommand(name string) *Command {
+	if c == nil {
+		return nil
 	}
-	return hash
-}
+	if len(c.SubCommands) == 0 {
+		return nil
+	}
+	if len(c.SubCommands) < indexedCommandLookupThreshold {
+		return (&c.SubCommands).Search(name)
+	}
 
-func pointerOf(value any) uintptr {
-	if value == nil {
-		return 0
+	key := commandPointer(c)
+	cacheValue, _ := nestedCommandLookupCaches.LoadOrStore(key, &commandLookupCache{})
+	cache := cacheValue.(*commandLookupCache)
+	sig := makeCommandsCacheSig(c, c.SubCommands, nil)
+
+	cache.mu.Lock()
+	if sig != cache.sig || !cache.ok {
+		cache.index = buildCommandLookup(c.SubCommands)
+		cache.sig = sig
+		cache.ok = true
 	}
-	return reflect.ValueOf(value).Pointer()
+	index := cache.index
+	cache.mu.Unlock()
+
+	return index[name]
 }
 
 func (a *App) setExitStatus(n int) {
@@ -787,7 +873,7 @@ func (a *App) help(args []string) error {
 	}
 
 	root := a.rootCommand()
-	cmd, _, err := findCommand(root.SubCommands, args)
+	cmd, _, err := findCommand(a, nil, root.SubCommands, args)
 	if err != nil {
 		return err
 	}
@@ -854,7 +940,7 @@ func (a *App) parseAppFlags(args []string) ([]string, []parsedFlagValue, error) 
 }
 
 // findCommand recursively finds a command or subcommand
-func findCommand(cmds Commands, args []string) (*Command, []string, error) {
+func findCommand(app *App, parent *Command, cmds Commands, args []string) (*Command, []string, error) {
 
 	if len(args) == 0 {
 		return nil, nil, fmt.Errorf("%w, no command provided", ErrNotFound)
@@ -862,7 +948,19 @@ func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 
 	name := args[0]
 
-	cmd := cmds.Search(name)
+	var cmd *Command
+	switch {
+	case parent != nil:
+		cmd = parent.searchSubCommand(name)
+	case app != nil:
+		if len(cmds) < indexedCommandLookupThreshold {
+			cmd = cmds.Search(name)
+		} else {
+			cmd = app.searchTopLevelCommand(name)
+		}
+	default:
+		cmd = cmds.Search(name)
+	}
 
 	if cmd == nil {
 		return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name)
@@ -872,7 +970,7 @@ func findCommand(cmds Commands, args []string) (*Command, []string, error) {
 
 	if len(args) > 1 && len(cmd.SubCommands) > 0 {
 
-		subCmd, remainingArgs, err := findCommand(cmd.SubCommands, args[1:])
+		subCmd, remainingArgs, err := findCommand(nil, cmd, cmd.SubCommands, args[1:])
 
 		if err == nil {
 			return subCmd, remainingArgs, nil

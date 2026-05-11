@@ -437,18 +437,138 @@ func BenchmarkFindCommandDeepTree(b *testing.B) {
 	leaf := &Command{Name: "leaf"}
 	level2 := &Command{Name: "level2", SubCommands: []*Command{leaf}}
 	level1 := &Command{Name: "level1", SubCommands: []*Command{level2}}
-	root := Commands{level1}
+	app := NewApp("test")
+	app.Commands = Commands{level1}
+	root := app.rootCommand()
 	args := []string{"level1", "level2", "leaf"}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		cmd, remaining, err := findCommand(root, args)
+		cmd, remaining, err := findCommand(app, nil, root.SubCommands, args)
 		if err != nil {
 			b.Fatalf("find command failed: %v", err)
 		}
 		if cmd != leaf || len(remaining) != 0 {
 			b.Fatalf("unexpected result cmd=%v remaining=%v", cmd, remaining)
 		}
+	}
+}
+
+func BenchmarkFindCommandWideTree(b *testing.B) {
+	const width = 256
+	commands := make(Commands, 0, width)
+	for i := 0; i < width; i++ {
+		commands = append(commands, &Command{
+			Name:    fmt.Sprintf("cmd-%03d", i),
+			Aliases: []string{fmt.Sprintf("c%03d", i)},
+		})
+	}
+
+	app := NewApp("test")
+	app.Commands = commands
+	root := app.rootCommand()
+	args := []string{"cmd-255"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd, remaining, err := findCommand(app, nil, root.SubCommands, args)
+		if err != nil {
+			b.Fatalf("find command failed: %v", err)
+		}
+		if cmd == nil || cmd.Name != "cmd-255" || len(remaining) != 0 {
+			b.Fatalf("unexpected result cmd=%v remaining=%v", cmd, remaining)
+		}
+	}
+}
+
+func BenchmarkFindCommandWideTreeAlias(b *testing.B) {
+	const width = 256
+	commands := make(Commands, 0, width)
+	for i := 0; i < width; i++ {
+		commands = append(commands, &Command{
+			Name:    fmt.Sprintf("cmd-%03d", i),
+			Aliases: []string{fmt.Sprintf("c%03d", i)},
+		})
+	}
+
+	app := NewApp("test")
+	app.Commands = commands
+	root := app.rootCommand()
+	args := []string{"c255"}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		cmd, remaining, err := findCommand(app, nil, root.SubCommands, args)
+		if err != nil {
+			b.Fatalf("find command failed: %v", err)
+		}
+		if cmd == nil || cmd.Name != "cmd-255" || len(remaining) != 0 {
+			b.Fatalf("unexpected result cmd=%v remaining=%v", cmd, remaining)
+		}
+	}
+}
+
+func BenchmarkAppSpecWideTree(b *testing.B) {
+	const width = 128
+	app := NewApp("test")
+	app.EnableConfigSupport()
+	app.SetFlags = func(f *FlagSet) {
+		var verbose bool
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+
+	commands := make(Commands, 0, width)
+	for i := 0; i < width; i++ {
+		cmdIndex := i
+		commands = append(commands, &Command{
+			Name:      fmt.Sprintf("cmd-%03d", i),
+			UsageLine: fmt.Sprintf("test cmd-%03d", i),
+			SetFlags: func(f *FlagSet) {
+				var output string
+				f.StringVar(&output, fmt.Sprintf("output-%03d", cmdIndex), "", "output format", "")
+			},
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		})
+	}
+	app.Commands = commands
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = app.Spec()
+	}
+}
+
+func BenchmarkAppDocsMarkdownWideTree(b *testing.B) {
+	const width = 128
+	app := NewApp("test")
+	app.EnableConfigSupport()
+	app.SetFlags = func(f *FlagSet) {
+		var verbose bool
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	}
+
+	commands := make(Commands, 0, width)
+	for i := 0; i < width; i++ {
+		cmdIndex := i
+		commands = append(commands, &Command{
+			Name:      fmt.Sprintf("cmd-%03d", i),
+			UsageLine: fmt.Sprintf("test cmd-%03d", i),
+			SetFlags: func(f *FlagSet) {
+				var output string
+				f.StringVar(&output, fmt.Sprintf("output-%03d", cmdIndex), "", "output format", "")
+			},
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		})
+	}
+	app.Commands = commands
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = markdownDocs(app.Spec())
 	}
 }
 
