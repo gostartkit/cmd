@@ -9,6 +9,7 @@ English | [简体中文](./README.zh-CN.md)
 - Positional argument schema
 - Multi-source binding with `env / config / CLI / default`
 - Shell completion
+- REPL and cursor-aware line completion APIs
 - Machine-readable `spec`
 - Markdown and man page generation
 - Hooks, middleware, and observers
@@ -28,15 +29,16 @@ This document is organized from quick start to platform-style integration.
 8. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
 9. [Positional Arguments](#positional-arguments)
 10. [Completion](#completion)
-11. [Machine-readable Spec](#machine-readable-spec)
-12. [Docs Generation](#docs-generation)
-13. [Lifecycle Hooks](#lifecycle-hooks)
-14. [Middleware](#middleware)
-15. [Observers and Telemetry](#observers-and-telemetry)
-16. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
-17. [Custom Extension Metadata](#custom-extension-metadata)
-18. [Common Patterns](#common-patterns)
-19. [API Quick Reference](#api-quick-reference)
+11. [REPL and Line Execution](#repl-and-line-execution)
+12. [Machine-readable Spec](#machine-readable-spec)
+13. [Docs Generation](#docs-generation)
+14. [Lifecycle Hooks](#lifecycle-hooks)
+15. [Middleware](#middleware)
+16. [Observers and Telemetry](#observers-and-telemetry)
+17. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
+18. [Custom Extension Metadata](#custom-extension-metadata)
+19. [Common Patterns](#common-patterns)
+20. [API Quick Reference](#api-quick-reference)
 
 ## Installation
 
@@ -419,6 +421,8 @@ Usage:
 `)
 ```
 
+For performance, usage rendering uses a small built-in replacement engine instead of `text/template`. Custom templates support literal text plus simple fields such as `{{.Name}}`, `{{.Short}}`, `{{.Long}}`, and `{{.UsageLine}}`.
+
 ## Config, Environment Variables, and Precedence
 
 ### Enable JSON Config Support
@@ -585,6 +589,74 @@ Built-ins also have completion:
 - `app spec json`
 - `app docs markdown`
 - `app docs man`
+
+### Programmatic completion
+
+For readline, TUI, editor, or agent integrations, use the line completion APIs. They reuse the same command tree and completion engine as shell completion.
+
+```go
+plain := app.CompleteLine("deploy --e", len("deploy --e"))
+detailed := app.CompleteLineDetailed("deploy --e", len("deploy --e"))
+```
+
+`CompleteLine` returns plain suggestion strings and stays compatible with existing integrations. `CompleteLineDetailed` returns metadata for richer UIs:
+
+```go
+type CompletionResult struct {
+	Value       string
+	Description string
+	Kind        string
+}
+```
+
+Current `Kind` values are:
+
+- `command`
+- `flag`
+- `value`
+- `positional`
+- `builtin`
+
+Shell completion remains plain text through `__complete`; it does not emit structured metadata.
+
+## REPL and Line Execution
+
+The REPL APIs let embedded programs reuse the existing `App`, command tree, flags, positionals, and completion logic without rebuilding dispatch.
+
+```go
+err := app.RunLine(ctx, `deploy "hello world" --env prod`)
+```
+
+`RunLine` trims empty lines, splits shell-like input, then calls `App.Run(ctx, args)`. The splitter supports whitespace, single quotes, double quotes, and backslash escaping.
+
+For an interactive loop:
+
+```go
+err := app.RunREPL(ctx, os.Stdin, os.Stdout)
+```
+
+Or configure the runtime directly:
+
+```go
+repl := &cmd.REPL{
+	App:    app,
+	Prompt: "app> ",
+	In:     in,
+	Out:    out,
+	Err:    errOut,
+}
+err := repl.Run(ctx)
+```
+
+Built-in REPL commands are:
+
+- `exit`
+- `quit`
+- `.exit`
+- `.quit`
+- `.help`
+
+Command errors are printed and the REPL keeps running. `context.Canceled` or input EOF exits the loop.
 
 ## Machine-readable Spec
 
@@ -926,6 +998,8 @@ These metadata fields are exported into:
 - `spec`
 - Markdown frontmatter
 
+Extension maps are cloned when metadata is copied into specs, docs, and runtime flag views. Map and slice-shaped values are cloned recursively, but opaque pointer or custom object payloads are shared by reference. If you need full isolation, store immutable values or clone the payload before attaching it.
+
 ## Common Patterns
 
 ### 1. Global config plus command-local flags
@@ -985,6 +1059,10 @@ app docs markdown ./site/docs
 
 - `NewApp(name string) *App`
 - `(*App).Run(ctx, args)`
+- `(*App).RunLine(ctx, line)`
+- `(*App).RunREPL(ctx, in, out)`
+- `(*App).CompleteLine(line, cursor)`
+- `(*App).CompleteLineDetailed(line, cursor)`
 - `(*App).EnableConfigSupport()`
 - `(*App).Use(...)`
 - `(*App).AddObserver(...)`
@@ -1019,6 +1097,10 @@ app docs markdown ./site/docs
 - `Flag`
 - `PositionalArg`
 - `CompletionContext`
+- `CompletionResult`
+- `LineCompleter`
+- `DetailedLineCompleter`
+- `REPL`
 - `HookContext`
 - `MiddlewareContext`
 - `Event`

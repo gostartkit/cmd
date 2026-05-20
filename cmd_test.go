@@ -858,6 +858,47 @@ func TestAppCompleteRootSuggestions(t *testing.T) {
 	}
 }
 
+func TestAppCompleteRootSkipsHiddenAndIncludesAliases(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{Name: "deploy", Aliases: []string{"ship"}, Short: "deploy services"},
+		{Name: "internal", Hidden: true, Short: "hidden command"},
+	}
+
+	got := app.complete([]string{""})
+	if !slices.Contains(got, "deploy") || !slices.Contains(got, "ship") {
+		t.Fatalf("expected visible command and alias, got %v", got)
+	}
+	if slices.Contains(got, "internal") {
+		t.Fatalf("expected hidden command to be omitted, got %v", got)
+	}
+}
+
+func TestAppCompleteRootBuiltinShadowing(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{Name: "spec", Short: "custom spec command"},
+	}
+
+	got := app.complete([]string{"sp"})
+	if !slices.Equal(got, []string{"spec"}) {
+		t.Fatalf("expected command to shadow builtin, got %v", got)
+	}
+}
+
+func TestCustomUsageTemplateLiteralOutput(t *testing.T) {
+	app := NewApp("test")
+	var output bytes.Buffer
+	app.Out = &output
+	app.Err = &output
+	app.UseUsageTemplate("custom usage output")
+
+	app.Usage()
+	if got := output.String(); !strings.Contains(got, "custom usage output") {
+		t.Fatalf("expected literal custom usage output, got %q", got)
+	}
+}
+
 func TestAppCompleteBuiltinArguments(t *testing.T) {
 	app := NewApp("test")
 

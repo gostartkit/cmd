@@ -9,6 +9,7 @@
 - 位置参数 schema
 - `env / config / CLI / default` 多来源绑定
 - shell completion
+- REPL 与 cursor-aware line completion API
 - 机器可读 `spec`
 - Markdown / man 文档生成
 - hooks / middleware / observer
@@ -28,15 +29,16 @@
 8. [配置、环境变量与优先级](#配置环境变量与优先级)
 9. [位置参数](#位置参数)
 10. [completion](#completion)
-11. [机器可读 spec](#机器可读-spec)
-12. [文档生成 docs](#文档生成-docs)
-13. [生命周期 hooks](#生命周期-hooks)
-14. [middleware](#middleware)
-15. [observer 与 telemetry](#observer-与-telemetry)
-16. [统一错误与退出码](#统一错误与退出码)
-17. [自定义扩展 metadata](#自定义扩展-metadata)
-18. [常见模式](#常见模式)
-19. [API 速查](#api-速查)
+11. [REPL 与行执行](#repl-与行执行)
+12. [机器可读 spec](#机器可读-spec)
+13. [文档生成 docs](#文档生成-docs)
+14. [生命周期 hooks](#生命周期-hooks)
+15. [middleware](#middleware)
+16. [observer 与 telemetry](#observer-与-telemetry)
+17. [统一错误与退出码](#统一错误与退出码)
+18. [自定义扩展 metadata](#自定义扩展-metadata)
+19. [常见模式](#常见模式)
+20. [API 速查](#api-速查)
 
 ## 安装
 
@@ -419,6 +421,8 @@ Usage:
 `)
 ```
 
+为了追求更低开销，usage 渲染使用库内置的轻量替换器，不再依赖 `text/template`。自定义模板支持普通文本以及 `{{.Name}}`、`{{.Short}}`、`{{.Long}}`、`{{.UsageLine}}` 等简单字段。
+
 ## 配置、环境变量与优先级
 
 ### 开启 JSON 配置支持
@@ -585,6 +589,74 @@ f.SetCompletion("name", func(ctx cmd.CompletionContext) []string {
 - `app spec json`
 - `app docs markdown`
 - `app docs man`
+
+### 程序化 completion
+
+readline、TUI、编辑器或 agent 集成可以直接使用 line completion API。它们复用同一套命令树和 completion engine，不需要重新定义命令关系。
+
+```go
+plain := app.CompleteLine("deploy --e", len("deploy --e"))
+detailed := app.CompleteLineDetailed("deploy --e", len("deploy --e"))
+```
+
+`CompleteLine` 返回纯字符串，保持旧集成兼容。`CompleteLineDetailed` 返回带 metadata 的结果，适合更丰富的 UI：
+
+```go
+type CompletionResult struct {
+	Value       string
+	Description string
+	Kind        string
+}
+```
+
+当前 `Kind` 取值包括：
+
+- `command`
+- `flag`
+- `value`
+- `positional`
+- `builtin`
+
+shell completion 仍然通过 `__complete` 输出纯文本，不会输出结构化 metadata。
+
+## REPL 与行执行
+
+REPL API 可以让嵌入式程序复用现有 `App`、命令树、flags、位置参数和 completion 逻辑，不需要重新拼装 dispatch。
+
+```go
+err := app.RunLine(ctx, `deploy "hello world" --env prod`)
+```
+
+`RunLine` 会忽略空行，把 shell-like 输入拆成 args，然后调用 `App.Run(ctx, args)`。拆分器支持空格、单引号、双引号和反斜杠转义。
+
+启动交互循环：
+
+```go
+err := app.RunREPL(ctx, os.Stdin, os.Stdout)
+```
+
+也可以直接配置 REPL runtime：
+
+```go
+repl := &cmd.REPL{
+	App:    app,
+	Prompt: "app> ",
+	In:     in,
+	Out:    out,
+	Err:    errOut,
+}
+err := repl.Run(ctx)
+```
+
+REPL 内建命令包括：
+
+- `exit`
+- `quit`
+- `.exit`
+- `.quit`
+- `.help`
+
+单条命令失败时 REPL 会打印错误并继续运行。`context.Canceled` 或输入 EOF 会退出循环。
 
 ## 机器可读 spec
 
@@ -928,6 +1000,8 @@ cmdDeploy.SetFlags = func(f *cmd.FlagSet) {
 - `spec`
 - Markdown frontmatter
 
+Extensions 在复制到 spec、docs 和运行期 flag view 时会被 clone。map 和 slice 形态的值会递归 clone，但 opaque pointer 或自定义对象 payload 会按引用共享。如果你需要完全隔离，请放入 immutable value，或在写入 Extensions 前自行 clone payload。
+
 ## 常见模式
 
 ### 1. 全局配置 + 命令参数
@@ -987,6 +1061,10 @@ app docs markdown ./site/docs
 
 - `NewApp(name string) *App`
 - `(*App).Run(ctx, args)`
+- `(*App).RunLine(ctx, line)`
+- `(*App).RunREPL(ctx, in, out)`
+- `(*App).CompleteLine(line, cursor)`
+- `(*App).CompleteLineDetailed(line, cursor)`
 - `(*App).EnableConfigSupport()`
 - `(*App).Use(...)`
 - `(*App).AddObserver(...)`
@@ -1021,6 +1099,10 @@ app docs markdown ./site/docs
 - `Flag`
 - `PositionalArg`
 - `CompletionContext`
+- `CompletionResult`
+- `LineCompleter`
+- `DetailedLineCompleter`
+- `REPL`
 - `HookContext`
 - `MiddlewareContext`
 - `Event`

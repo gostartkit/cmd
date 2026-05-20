@@ -7,6 +7,13 @@ import (
 	"strings"
 )
 
+var (
+	sourceOrderCLIDefault          = []string{"cli", "default"}
+	sourceOrderCLIEnvDefault       = []string{"cli", "env", "default"}
+	sourceOrderCLIConfigDefault    = []string{"cli", "config", "default"}
+	sourceOrderCLIEnvConfigDefault = []string{"cli", "env", "config", "default"}
+)
+
 type AppSpec struct {
 	SchemaVersion string            `json:"schema_version"`
 	Name          string            `json:"name"`
@@ -122,7 +129,6 @@ func (a *App) runSpec(args []string) error {
 
 func (a *App) Spec() AppSpec {
 	root := a.rootCommand()
-	rootFlags := a.newRootFlagSetFor(root, io.Discard)
 	var globalFlagSpecs []FlagSpec
 	spec := AppSpec{
 		SchemaVersion: "v2",
@@ -162,9 +168,15 @@ func (a *App) Spec() AppSpec {
 		spec.Config.Shorthand = a.ConfigFlag.Shorthand
 		spec.Config.EnvVars = append([]string(nil), a.ConfigFlag.EnvVars...)
 	}
-	if rootFlags != nil {
-		globalFlagSpecs = flagSetSpec(rootFlags)
+	if rootDef, ok := a.rootFlagDefinition(root); ok && rootDef != nil {
+		globalFlagSpecs = flagSetDefSpec(rootDef)
 		spec.GlobalFlags = globalFlagSpecs
+	} else {
+		rootFlags := a.newRootFlagSetFor(root, io.Discard)
+		if rootFlags != nil {
+			globalFlagSpecs = flagSetSpec(rootFlags)
+			spec.GlobalFlags = globalFlagSpecs
+		}
 	}
 	rootSpec := a.commandSpec(root, root, globalFlagSpecs)
 	rootSpec.Name = a.Name
@@ -198,7 +210,11 @@ func (a *App) commandSpec(root *Command, cmd *Command, globalFlagSpecs []FlagSpe
 			spec.Flags = append([]FlagSpec(nil), globalFlagSpecs...)
 		}
 	} else {
-		spec.Flags = mergeCommandFlagSpecs(globalFlagSpecs, a.localCommandFlagSpecs(cmd))
+		if def, ok := a.commandFlagDefinition(root, cmd); ok && def != nil {
+			spec.Flags = flagSetDefSpec(def)
+		} else {
+			spec.Flags = mergeCommandFlagSpecs(globalFlagSpecs, a.localCommandFlagSpecs(cmd))
+		}
 	}
 	if len(cmd.SubCommands) > 0 {
 		spec.SubCommands = make([]CommandSpec, 0, len(cmd.SubCommands))
@@ -264,10 +280,31 @@ func positionalSpecs(positionals []PositionalArg) []PositionalSpec {
 }
 
 func flagSetSpec(flagSet *FlagSet) []FlagSpec {
+	if flagSet == nil {
+		return nil
+	}
+	if flagSet.def != nil {
+		flags := make([]FlagSpec, 0, len(flagSet.def.Flags))
+		for _, defined := range flagSet.def.Flags {
+			flags = append(flags, flagSpecFromDef(defined))
+		}
+		return flags
+	}
 	flags := make([]FlagSpec, 0, len(flagSet.formal))
 	flagSet.VisitAll(func(flag *Flag) {
 		flags = append(flags, flagSpec(flag))
 	})
+	return flags
+}
+
+func flagSetDefSpec(def *flagSetDef) []FlagSpec {
+	if def == nil || len(def.Flags) == 0 {
+		return nil
+	}
+	flags := make([]FlagSpec, 0, len(def.Flags))
+	for _, defined := range def.Flags {
+		flags = append(flags, flagSpecFromDef(defined))
+	}
 	return flags
 }
 
@@ -293,6 +330,31 @@ func flagSpec(flag *Flag) FlagSpec {
 	}
 }
 
+func flagSpecFromDef(def *flagDef) FlagSpec {
+	if def == nil {
+		return FlagSpec{}
+	}
+	flagType, usage := unquoteUsageForKind(def.Usage, def.ValueKind, nil)
+	return FlagSpec{
+		Name:               def.Name,
+		Shorthand:          def.Shorthand,
+		Type:               flagType,
+		Usage:              usage,
+		Default:            def.DefValue,
+		Category:           def.Category,
+		EnvVars:            def.EnvVars,
+		ConfigKeys:         def.ConfigKeys,
+		SourceOrder:        sourceOrderForDef(def),
+		Enum:               def.Enum,
+		Required:           def.Required,
+		Hidden:             def.Hidden,
+		Deprecated:         def.Deprecated,
+		Example:            def.Example,
+		SupportsCompletion: def.Completion != nil || len(def.Enum) > 0,
+		Extensions:         def.Extensions,
+	}
+}
+
 func sourceOrder(flag *Flag) []string {
 	order := []string{"cli"}
 	if len(flag.EnvVars) > 0 {
@@ -303,6 +365,21 @@ func sourceOrder(flag *Flag) []string {
 	}
 	order = append(order, "default")
 	return order
+}
+
+func sourceOrderForDef(def *flagDef) []string {
+	hasEnv := len(def.EnvVars) > 0
+	hasConfig := len(def.ConfigKeys) > 0
+	switch {
+	case hasEnv && hasConfig:
+		return sourceOrderCLIEnvConfigDefault
+	case hasEnv:
+		return sourceOrderCLIEnvDefault
+	case hasConfig:
+		return sourceOrderCLIConfigDefault
+	default:
+		return sourceOrderCLIDefault
+	}
 }
 
 func hookSpec(before BeforeHook, after AfterHook, onError ErrorHook) HookSpec {

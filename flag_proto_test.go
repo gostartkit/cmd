@@ -47,7 +47,7 @@ func TestCachedFlagDefinitionInstantiateSupportedTypes(t *testing.T) {
 		})
 	})
 
-	if !cache.cacheable {
+	if !cache.Cacheable {
 		t.Fatal("expected builtin flag definition to be cacheable")
 	}
 
@@ -156,18 +156,36 @@ func TestCachedFlagDefinitionWarnDeprecated(t *testing.T) {
 	}
 }
 
-func TestCachedFlagDefinitionCustomVarFallback(t *testing.T) {
+func TestCachedFlagDefinitionCustomVarSupport(t *testing.T) {
 	var values customSliceValue
 
 	cache := buildCachedFlagDefinition("test", func(f *FlagSet) {
 		f.Var(&values, "values", "csv values", "v")
 	})
 
-	if cache.cacheable {
-		t.Fatal("expected custom Var definition to be non-cacheable")
+	if !cache.Cacheable {
+		t.Fatal("expected custom Var definition to be cacheable via reset factory")
 	}
-	if _, ok := instantiateCachedFlagDefinition(cache, "custom", ioDiscard()); ok {
-		t.Fatal("expected cached instantiation to fail for custom Var")
+	flagSet, ok := instantiateCachedFlagDefinition(cache, "custom", ioDiscard())
+	if !ok {
+		t.Fatal("expected cached instantiation to succeed for custom Var")
+	}
+	if err := flagSet.Parse([]string{"--values", "a,b"}); err != nil {
+		t.Fatalf("parse custom values: %v", err)
+	}
+	if !slices.Equal([]string(values), []string{"a", "b"}) {
+		t.Fatalf("unexpected first values: %v", values)
+	}
+
+	next, ok := instantiateCachedFlagDefinition(cache, "custom", ioDiscard())
+	if !ok {
+		t.Fatal("expected second cached instantiation to succeed for custom Var")
+	}
+	if len(values) != 0 {
+		t.Fatalf("expected custom values reset before next parse, got %v", values)
+	}
+	if err := next.Parse([]string{"--values", "c"}); err != nil {
+		t.Fatalf("second parse custom values: %v", err)
 	}
 }
 

@@ -42,6 +42,10 @@ func (f *FlagSet) SetExtension(name, key string, value any) error {
 	return nil
 }
 
+// cloneExtensions clones map and slice-shaped extension payloads recursively.
+// Opaque pointer or custom object payloads are copied by reference. Callers
+// that need complete isolation should store immutable values or clone those
+// payloads themselves before attaching them to Extensions.
 func cloneExtensions(extensions map[string]any) map[string]any {
 	if len(extensions) == 0 {
 		return nil

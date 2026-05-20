@@ -14,6 +14,11 @@ type PositionalArg struct {
 	Enum       []string
 	Example    string
 	Completion CompletionFunc
+	// Extensions carries custom metadata for integrations and tooling.
+	// Slice and map values are cloned when the library copies metadata, but
+	// opaque pointer or custom object payloads are shared by reference. Callers
+	// that need full isolation should store immutable values or clone payloads
+	// themselves before attaching them here.
 	Extensions map[string]any
 }
 

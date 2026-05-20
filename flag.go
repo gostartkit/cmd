@@ -314,9 +314,14 @@ type FlagSet struct {
 
 	name          string
 	parsed        bool
-	sorted        bool
-	actual        []*Flag
+	actual        []int
 	formal        []*Flag
+	sortedFormal  []*Flag
+	byName        map[string]int
+	byShort       map[string]int
+	isSet         []bool
+	def           *flagSetDef
+	runtime       []flagRuntime
 	args          []string // arguments after flags
 	errorHandling ErrorHandling
 	output        io.Writer // nil means stderr; use Output() accessor
@@ -339,7 +344,16 @@ type Flag struct {
 	Deprecated string
 	Example    string
 	Completion CompletionFunc
+	// Extensions carries custom metadata for integrations and tooling.
+	// Slice and map values are cloned when the library copies metadata, but
+	// opaque pointer or custom object payloads are shared by reference. Callers
+	// that need full isolation should store immutable values or clone payloads
+	// themselves before attaching them here.
 	Extensions map[string]any
+
+	index int
+	def   *flagDef
+	rt    *flagRuntime
 }
 
 type CompletionContext struct {
@@ -360,24 +374,214 @@ func sortFlags(flags []*Flag) {
 	})
 }
 
-// searchFlagsName searches for a flag by name.
-func (f *FlagSet) Lookup(name string) (*Flag, bool) {
-	for _, v := range f.formal {
-		if v.Name == name {
-			return v, true
+func (f *FlagSet) sortedFlags() []*Flag {
+	if len(f.formal) == 0 {
+		return nil
+	}
+	if f.def != nil {
+		for index := range f.formal {
+			f.flagViewAt(index)
+		}
+		return f.formal
+	}
+	if len(f.sortedFormal) == len(f.formal) && f.sortedFormal != nil {
+		return f.sortedFormal
+	}
+	f.sortedFormal = append(f.sortedFormal[:0], f.formal...)
+	sortFlags(f.sortedFormal)
+	return f.sortedFormal
+}
+
+func (f *FlagSet) flagViewAt(index int) *Flag {
+	if index < 0 || index >= len(f.formal) {
+		return nil
+	}
+	if f.formal[index] != nil {
+		return f.formal[index]
+	}
+	if f.def == nil || index >= len(f.runtime) || index >= len(f.def.Flags) {
+		return f.formal[index]
+	}
+	flag := instantiateFlagView(f.def.Flags[index], &f.runtime[index], index)
+	f.formal[index] = flag
+	return flag
+}
+
+func (f *FlagSet) lookupFlagIndex(name string) (*Flag, int, bool) {
+	if f == nil {
+		return nil, -1, false
+	}
+	if len(f.byName) > 0 {
+		idx, ok := f.byName[name]
+		if !ok || idx < 0 || idx >= len(f.formal) {
+			goto defLookup
+		}
+		if flag := f.formal[idx]; flag != nil {
+			return flag, idx, true
+		}
+		return f.flagViewAt(idx), idx, true
+	}
+defLookup:
+	if f.def != nil {
+		idx, ok := f.def.ByName[name]
+		if !ok || idx < 0 || idx >= len(f.formal) {
+			return nil, -1, false
+		}
+		return f.flagViewAt(idx), idx, true
+	}
+	return nil, -1, false
+}
+
+func (f *FlagSet) lookupIndexOnly(name string) (int, bool) {
+	if f == nil {
+		return -1, false
+	}
+	if len(f.byName) > 0 {
+		if idx, ok := f.byName[name]; ok && idx >= 0 && idx < len(f.formal) {
+			return idx, true
 		}
 	}
-	return nil, false
+	if f.def != nil {
+		idx, ok := f.def.ByName[name]
+		if ok && idx >= 0 && idx < len(f.formal) {
+			return idx, true
+		}
+	}
+	return -1, false
+}
+
+func (f *FlagSet) lookupShortFlagIndex(shorthand string) (*Flag, int, bool) {
+	if f == nil {
+		return nil, -1, false
+	}
+	if len(f.byShort) > 0 {
+		idx, ok := f.byShort[shorthand]
+		if !ok || idx < 0 || idx >= len(f.formal) {
+			goto defLookup
+		}
+		if flag := f.formal[idx]; flag != nil {
+			return flag, idx, true
+		}
+		return f.flagViewAt(idx), idx, true
+	}
+defLookup:
+	if f.def != nil {
+		idx, ok := f.def.ByShort[shorthand]
+		if !ok || idx < 0 || idx >= len(f.formal) {
+			return nil, -1, false
+		}
+		return f.flagViewAt(idx), idx, true
+	}
+	return nil, -1, false
+}
+
+func (f *FlagSet) lookupShortIndexOnly(shorthand string) (int, bool) {
+	if f == nil {
+		return -1, false
+	}
+	if len(f.byShort) > 0 {
+		if idx, ok := f.byShort[shorthand]; ok && idx >= 0 && idx < len(f.formal) {
+			return idx, true
+		}
+	}
+	if f.def != nil {
+		idx, ok := f.def.ByShort[shorthand]
+		if ok && idx >= 0 && idx < len(f.formal) {
+			return idx, true
+		}
+	}
+	return -1, false
+}
+
+func (f *FlagSet) appendFormalFlag(flag *Flag) {
+	if flag == nil {
+		return
+	}
+	flag.index = len(f.formal)
+	f.formal = append(f.formal, flag)
+	f.sortedFormal = nil
+	f.isSet = append(f.isSet, false)
+	if f.byName == nil {
+		f.byName = make(map[string]int, 1)
+	}
+	f.byName[flag.Name] = flag.index
+	if flag.Shorthand != "" {
+		if f.byShort == nil {
+			f.byShort = make(map[string]int, 1)
+		}
+		f.byShort[flag.Shorthand] = flag.index
+	}
+}
+
+func (f *FlagSet) valueAt(index int) Value {
+	if index < 0 {
+		return nil
+	}
+	if index < len(f.runtime) {
+		return f.runtime[index].value
+	}
+	if index < len(f.formal) && f.formal[index] != nil {
+		return f.formal[index].Value
+	}
+	return nil
+}
+
+func (f *FlagSet) defAt(index int) *flagDef {
+	if index < 0 {
+		return nil
+	}
+	if f.def != nil && index < len(f.def.Flags) {
+		return f.def.Flags[index]
+	}
+	if index < len(f.formal) && f.formal[index] != nil && f.formal[index].def != nil {
+		return f.formal[index].def
+	}
+	return nil
+}
+
+func (f *FlagSet) rebuildFlagIndexes() {
+	f.byName = make(map[string]int, len(f.formal))
+	f.byShort = make(map[string]int, len(f.formal))
+	for index, flag := range f.formal {
+		if flag == nil {
+			continue
+		}
+		flag.index = index
+		f.byName[flag.Name] = index
+		if flag.Shorthand != "" {
+			f.byShort[flag.Shorthand] = index
+		}
+	}
+	if len(f.isSet) < len(f.formal) {
+		grown := make([]bool, len(f.formal))
+		copy(grown, f.isSet)
+		f.isSet = grown
+	}
+}
+
+func (f *FlagSet) markSet(index int) {
+	if index < 0 {
+		return
+	}
+	if index >= len(f.isSet) {
+		return
+	}
+	f.isSet[index] = true
+	if index < len(f.runtime) {
+		f.runtime[index].isSet = true
+	}
+}
+
+// searchFlagsName searches for a flag by name.
+func (f *FlagSet) Lookup(name string) (*Flag, bool) {
+	flag, _, ok := f.lookupFlagIndex(name)
+	return flag, ok
 }
 
 // LookupShort returns the [Flag] structure of the named shorthand flag, returning nil if none exists.
 func (f *FlagSet) LookupShort(shorthand string) (*Flag, bool) {
-	for _, v := range f.formal {
-		if v.Shorthand == shorthand {
-			return v, true
-		}
-	}
-	return nil, false
+	flag, _, ok := f.lookupShortFlagIndex(shorthand)
+	return flag, ok
 }
 
 // Output returns the destination for usage and error messages. [os.Stderr] is returned if
@@ -408,11 +612,7 @@ func (f *FlagSet) SetOutput(output io.Writer) {
 // VisitAll visits the flags in lexicographical order, calling fn for each.
 // It visits all flags, even those not set.
 func (f *FlagSet) VisitAll(fn func(*Flag)) {
-	if !f.sorted {
-		sortFlags(f.formal)
-		f.sorted = true
-	}
-	for _, flag := range f.formal {
+	for _, flag := range f.sortedFlags() {
 		fn(flag)
 	}
 }
@@ -426,22 +626,13 @@ func VisitAll(fn func(*Flag)) {
 // Visit visits the flags in lexicographical order, calling fn for each.
 // It visits only those flags that have been set.
 func (f *FlagSet) Visit(fn func(*Flag)) {
-	if len(f.actual) == 0 {
+	if len(f.actual) == 0 || len(f.formal) == 0 {
 		return
 	}
-
-	actual := make([]*Flag, 0, len(f.actual))
-	seen := make(map[string]struct{}, len(f.actual))
-	for _, flag := range f.actual {
-		if _, ok := seen[flag.Name]; ok {
+	for _, flag := range f.sortedFlags() {
+		if flag.index < 0 || flag.index >= len(f.isSet) || !f.isSet[flag.index] {
 			continue
 		}
-		seen[flag.Name] = struct{}{}
-		actual = append(actual, flag)
-	}
-
-	sortFlags(actual)
-	for _, flag := range actual {
 		fn(flag)
 	}
 }
@@ -484,7 +675,7 @@ func (f *FlagSet) Set(name, value string) error {
 	return f.set(name, value)
 }
 func (f *FlagSet) set(name, value string) error {
-	flag, ok := f.Lookup(name)
+	index, ok := f.lookupIndexOnly(name)
 	if !ok {
 		// Remember that a flag that isn't defined is being set.
 		// We return an error in this case, but in addition if
@@ -506,14 +697,20 @@ func (f *FlagSet) set(name, value string) error {
 
 		return fmt.Errorf("no such flag -%v", name)
 	}
-	err := flag.Value.Set(value)
+	flagValue := f.valueAt(index)
+	if flagValue == nil {
+		flag, _, _ := f.lookupFlagIndex(name)
+		flagValue = flag.Value
+	}
+	err := flagValue.Set(value)
 	if err != nil {
 		return err
 	}
 	if f.actual == nil {
-		f.actual = make([]*Flag, 0)
+		f.actual = make([]int, 0)
 	}
-	f.actual = append(f.actual, flag)
+	f.actual = append(f.actual, index)
+	f.markSet(index)
 
 	return nil
 }
@@ -603,15 +800,35 @@ func SetExample(name, example string) {
 }
 
 func (f *FlagSet) IsSet(name string) bool {
-	for _, flag := range f.actual {
-		if flag.Name == name {
-			return true
-		}
+	_, index, ok := f.lookupFlagIndex(name)
+	if !ok || index < 0 || index >= len(f.isSet) {
+		return false
 	}
-	return false
+	return f.isSet[index]
 }
 
 func (f *FlagSet) ApplyEnv() error {
+	if f != nil && f.def != nil {
+		for index, def := range f.def.Flags {
+			if len(def.EnvVars) == 0 {
+				continue
+			}
+			for _, envVar := range def.EnvVars {
+				value, ok := os.LookupEnv(envVar)
+				if !ok {
+					continue
+				}
+				if err := f.set(def.Name, value); err != nil {
+					return err
+				}
+				if index < len(f.runtime) {
+					f.runtime[index].isSet = true
+				}
+				break
+			}
+		}
+		return nil
+	}
 	var applyErr error
 	f.VisitAll(func(flag *Flag) {
 		if applyErr != nil || len(flag.EnvVars) == 0 {
@@ -632,6 +849,28 @@ func (f *FlagSet) ApplyEnv() error {
 }
 
 func (f *FlagSet) ApplyConfig(data map[string]any) error {
+	if f != nil && f.def != nil {
+		for _, def := range f.def.Flags {
+			if len(def.ConfigKeys) == 0 || f.IsSet(def.Name) {
+				continue
+			}
+			for _, key := range def.ConfigKeys {
+				value, ok := configValueAtPath(data, key)
+				if !ok {
+					continue
+				}
+				text, err := stringifyConfigValue(value)
+				if err != nil {
+					return fmt.Errorf("config key %q for --%s: %w", key, def.Name, err)
+				}
+				if err := f.set(def.Name, text); err != nil {
+					return fmt.Errorf("config key %q for --%s: %w", key, def.Name, err)
+				}
+				break
+			}
+		}
+		return nil
+	}
 	var applyErr error
 	f.VisitAll(func(flag *Flag) {
 		if applyErr != nil || len(flag.ConfigKeys) == 0 || f.IsSet(flag.Name) {
@@ -658,6 +897,17 @@ func (f *FlagSet) ApplyConfig(data map[string]any) error {
 
 func (f *FlagSet) Validate() error {
 	var missing []string
+	if f != nil && f.def != nil {
+		for _, def := range f.def.Flags {
+			if def.Required && !f.IsSet(def.Name) {
+				missing = append(missing, "--"+def.Name)
+			}
+		}
+		if len(missing) == 0 {
+			return nil
+		}
+		return f.failf("required flag(s) not set: %s", strings.Join(missing, ", "))
+	}
 	f.VisitAll(func(flag *Flag) {
 		if flag.Required && !f.IsSet(flag.Name) {
 			missing = append(missing, "--"+flag.Name)
@@ -670,6 +920,15 @@ func (f *FlagSet) Validate() error {
 }
 
 func (f *FlagSet) WarnDeprecated() {
+	if f != nil && f.def != nil {
+		for index, def := range f.def.Flags {
+			if def.Deprecated == "" || index >= len(f.isSet) || !f.isSet[index] {
+				continue
+			}
+			fmt.Fprintf(f.Output(), "Warning: flag --%s is deprecated: %s\n", def.Name, def.Deprecated)
+		}
+		return
+	}
 	f.Visit(func(flag *Flag) {
 		if flag.Deprecated == "" {
 			return
@@ -716,8 +975,16 @@ func isZeroValue(flag *Flag, value string) (ok bool, err error) {
 // If there are no back quotes, the name is an educated guess of the
 // type of the flag's value, or the empty string if the flag is boolean.
 func UnquoteUsage(flag *Flag) (name string, usage string) {
+	kind := flagValueKindUnknown
+	if flag != nil && flag.def != nil {
+		kind = flag.def.ValueKind
+	}
+	return unquoteUsageForKind(flag.Usage, kind, flag.Value)
+}
+
+func unquoteUsageForKind(text string, kind flagValueKind, value Value) (name string, usage string) {
 	// Look for a back-quoted name, but avoid the strings package.
-	usage = flag.Usage
+	usage = text
 	for i := 0; i < len(usage); i++ {
 		if usage[i] == '`' {
 			for j := i + 1; j < len(usage); j++ {
@@ -731,8 +998,27 @@ func UnquoteUsage(flag *Flag) (name string, usage string) {
 		}
 	}
 	// No explicit name, so use type if we can find one.
-	name = "value"
-	switch fv := flag.Value.(type) {
+	return flagValuePlaceholder(kind, value), usage
+}
+
+func flagValuePlaceholder(kind flagValueKind, value Value) string {
+	switch kind {
+	case flagValueKindBool, flagValueKindBoolFunc:
+		return ""
+	case flagValueKindDuration:
+		return "duration"
+	case flagValueKindFloat64:
+		return "float"
+	case flagValueKindInt, flagValueKindInt64:
+		return "int"
+	case flagValueKindString:
+		return "string"
+	case flagValueKindUint, flagValueKindUint64:
+		return "uint"
+	}
+
+	name := "value"
+	switch fv := value.(type) {
 	case boolFlag:
 		if fv.IsBoolFlag() {
 			name = ""
@@ -748,7 +1034,7 @@ func UnquoteUsage(flag *Flag) (name string, usage string) {
 	case *uintValue, *uint64Value:
 		name = "uint"
 	}
-	return
+	return name
 }
 
 // PrintDefaults prints, to standard error unless configured otherwise, the
@@ -1209,10 +1495,7 @@ func (f *FlagSet) Var(value Value, name string, usage string, shorthand string) 
 	if pos := searchString(f.undef, name); pos != "" {
 		panic(fmt.Sprintf("flag %s set at %s before being defined", name, pos))
 	}
-	if f.formal == nil {
-		f.formal = make([]*Flag, 0)
-	}
-	f.formal = append(f.formal, flag)
+	f.appendFormalFlag(flag)
 }
 
 // Var defines a flag with the specified name and usage string. The type and
@@ -1285,12 +1568,12 @@ func (f *FlagSet) parseOne() (bool, error) {
 		}
 	}
 
-	var flag *Flag
+	var flagIndex int
 	var ok bool
 
 	if numMinuses == 1 {
 		// it's a shorthand flag
-		flag, ok = f.LookupShort(name)
+		flagIndex, ok = f.lookupShortIndexOnly(name)
 		if !ok {
 			if name == "h" { // special case for nice help message.
 				f.usage()
@@ -1299,7 +1582,7 @@ func (f *FlagSet) parseOne() (bool, error) {
 			return false, f.failf("flag provided but not defined: -%s%s", name, f.formatFlagSuggestion(name, true))
 		}
 	} else {
-		flag, ok = f.Lookup(name)
+		flagIndex, ok = f.lookupIndexOnly(name)
 		if !ok {
 			if name == "help" { // special case for nice help message.
 				f.usage()
@@ -1308,8 +1591,12 @@ func (f *FlagSet) parseOne() (bool, error) {
 			return false, f.failf("flag provided but not defined: --%s%s", name, f.formatFlagSuggestion(name, false))
 		}
 	}
+	flagValue := f.valueAt(flagIndex)
+	if flagValue == nil {
+		flagValue = f.flagViewAt(flagIndex).Value
+	}
 
-	if fv, ok := flag.Value.(boolFlag); ok && fv.IsBoolFlag() { // special case: doesn't need an arg
+	if fv, ok := flagValue.(boolFlag); ok && fv.IsBoolFlag() { // special case: doesn't need an arg
 		if hasValue {
 			if err := fv.Set(value); err != nil {
 				return false, f.failf("invalid boolean value %q for -%s: %v", value, name, err)
@@ -1329,19 +1616,20 @@ func (f *FlagSet) parseOne() (bool, error) {
 		if !hasValue {
 			return false, f.failf("flag needs an argument: -%s", name)
 		}
-		if err := flag.Value.Set(value); err != nil {
+		if err := flagValue.Set(value); err != nil {
 			return false, f.failf("invalid value %q for flag -%s: %v", value, name, err)
 		}
 	}
 	if f.actual == nil {
-		f.actual = make([]*Flag, 0)
+		f.actual = make([]int, 0)
 	}
-	f.actual = append(f.actual, flag)
+	f.actual = append(f.actual, flagIndex)
+	f.markSet(flagIndex)
 	return true, nil
 }
 
 func (f *FlagSet) formatFlagSuggestion(name string, shorthand bool) string {
-	suggestions := suggestFlags(name, f.formal, shorthand)
+	suggestions := suggestFlags(name, f.sortedFlags(), shorthand)
 	if len(suggestions) == 0 {
 		return ""
 	}
@@ -1402,17 +1690,24 @@ func suggestFlags(name string, flags []*Flag, shorthand bool) []string {
 func (f *FlagSet) Parse(arguments []string) error {
 	f.parsed = true
 	f.args = arguments
-	positionals := make([]string, 0, len(arguments))
+	var positionals []string
 
 	for len(f.args) > 0 {
 		arg := f.args[0]
 		if arg == "--" {
+			if positionals == nil {
+				f.args = f.args[1:]
+				return nil
+			}
 			positionals = append(positionals, f.args[1:]...)
 			f.args = positionals
 			return nil
 		}
 
 		if len(arg) < 2 || arg[0] != '-' {
+			if positionals == nil {
+				positionals = make([]string, 0, len(arguments))
+			}
 			positionals = append(positionals, arg)
 			f.args = f.args[1:]
 			continue
@@ -1438,6 +1733,10 @@ func (f *FlagSet) Parse(arguments []string) error {
 		}
 	}
 
+	if positionals == nil {
+		f.args = nil
+		return nil
+	}
 	f.args = positionals
 	return nil
 }

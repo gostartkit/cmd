@@ -12,6 +12,7 @@ var (
 	benchCtx         = context.Background()
 	benchRunErr      error
 	benchStringsSink []string
+	benchResultsSink []CompletionResult
 	benchSpecSink    AppSpec
 	benchDocSink     string
 )
@@ -104,7 +105,7 @@ func BenchmarkFlagSetParseManyFlags(b *testing.B) {
 	})
 
 	b.Run("prototype-instantiate-parse", func(b *testing.B) {
-		if !cache.cacheable {
+		if !cache.Cacheable {
 			b.Fatal("expected cacheable definition")
 		}
 		b.ReportAllocs()
@@ -135,7 +136,7 @@ func BenchmarkFlagSetCloneDefinition(b *testing.B) {
 	})
 
 	b.Run("prototype-instantiate", func(b *testing.B) {
-		if !cache.cacheable {
+		if !cache.Cacheable {
 			b.Fatal("expected cacheable definition")
 		}
 		b.ReportAllocs()
@@ -155,6 +156,16 @@ func BenchmarkCompleteRoot(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		benchStringsSink = app.complete(args)
+	}
+}
+
+func BenchmarkCompleteDetailedRoot(b *testing.B) {
+	app := benchmarkWideApp(1000)
+	args := []string{""}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchResultsSink = app.completeDetailed(args)
 	}
 }
 
@@ -178,6 +189,16 @@ func BenchmarkCompleteFlags(b *testing.B) {
 	}
 }
 
+func BenchmarkCompleteDetailedFlags(b *testing.B) {
+	app := benchmarkFlagApp()
+	args := []string{"deploy", "--e"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchResultsSink = app.completeDetailed(args)
+	}
+}
+
 func BenchmarkCompleteLineSimple(b *testing.B) {
 	app := benchmarkFlagApp()
 	line := "deploy --e"
@@ -198,6 +219,28 @@ func BenchmarkRunLineSimple(b *testing.B) {
 		if benchRunErr != nil {
 			b.Fatalf("run line failed: %v", benchRunErr)
 		}
+	}
+}
+
+func BenchmarkFlagLookup(b *testing.B) {
+	flagSet := benchmarkManyFlagsFlagSet(64)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, ok := flagSet.Lookup("string-33"); !ok {
+			b.Fatal("expected lookup hit")
+		}
+	}
+}
+
+func BenchmarkVisitAll(b *testing.B) {
+	flagSet := benchmarkManyFlagsFlagSet(64)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		flagSet.VisitAll(func(flag *Flag) {
+			benchRunErr = nil
+		})
 	}
 }
 
@@ -380,4 +423,19 @@ func benchmarkManyFlagsArgs(count int) []string {
 		}
 	}
 	return args
+}
+
+func benchmarkManyFlagsFlagSet(count int) *FlagSet {
+	register := benchmarkManyFlagsRegister(count)
+	cache := buildCachedFlagDefinition("bench", register)
+	if cache.Cacheable {
+		flagSet, ok := instantiateCachedFlagDefinition(cache, "bench", io.Discard)
+		if ok {
+			return flagSet
+		}
+	}
+	flagSet := NewFlagSet("bench", ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	register(flagSet)
+	return flagSet
 }

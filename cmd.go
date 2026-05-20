@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"text/template"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -61,7 +60,12 @@ type App struct {
 	OnError       ErrorHook
 	Middlewares   []Middleware
 	Observers     []Observer
-	Extensions    map[string]any
+	// Extensions carries custom metadata for integrations and tooling.
+	// Slice and map values are cloned when the library copies metadata, but
+	// opaque pointer or custom object payloads are shared by reference. Callers
+	// that need full isolation should store immutable values or clone payloads
+	// themselves before attaching them here.
+	Extensions map[string]any
 
 	mu          sync.Mutex
 	cacheMu     sync.Mutex
@@ -70,20 +74,31 @@ type App struct {
 	configData  map[string]any
 	currentRoot *Command
 
-	cachedRootSubCommands    Commands
-	cachedRootSubCommandsSig commandsCacheSig
-	cachedRootSubCommandsOK  bool
-	cachedSyntheticRoot      *Command
-	cachedSyntheticRootSig   commandsCacheSig
-	cachedSyntheticRootName  string
-	cachedSyntheticRootShort string
-	cachedSyntheticRootLong  string
-	cachedSyntheticRootOK    bool
-	cachedRootCommandIndex   map[string]*Command
-	cachedRootCommandIndexOK bool
-	cachedBuiltinSpecs       []string
-	cachedBuiltinSpecsSig    commandsCacheSig
-	cachedBuiltinSpecsOK     bool
+	cachedRootSubCommands              Commands
+	cachedRootSubCommandsSig           commandsCacheSig
+	cachedRootSubCommandsOK            bool
+	cachedSyntheticRoot                *Command
+	cachedSyntheticRootSig             commandsCacheSig
+	cachedSyntheticRootName            string
+	cachedSyntheticRootShort           string
+	cachedSyntheticRootLong            string
+	cachedSyntheticRootOK              bool
+	cachedRootCommandIndex             map[string]*Command
+	cachedRootCommandIndexOK           bool
+	cachedBuiltinSpecs                 []string
+	cachedBuiltinSpecsSig              commandsCacheSig
+	cachedBuiltinSpecsOK               bool
+	cachedRootFlagDef                  *flagSetDef
+	cachedRootFlagDefOK                bool
+	cachedCommandFlagDefs              map[*Command]*flagSetDef
+	cachedRootCommandCompletionValues  []string
+	cachedRootCommandCompletionResults []CompletionResult
+	cachedRootCommandCompletionSig     commandsCacheSig
+	cachedRootCommandCompletionOK      bool
+	cachedRootCompletionValues         []string
+	cachedRootCompletionResults        []CompletionResult
+	cachedRootCompletionSig            commandsCacheSig
+	cachedRootCompletionOK             bool
 }
 
 // NewApp creates a new App instance
@@ -105,6 +120,7 @@ func (a *App) EnableConfigSupport() {
 	if a.ConfigLoader == nil {
 		a.ConfigLoader = LoadJSONConfig
 	}
+	a.invalidateFlagDefinitionCaches()
 }
 
 func (a *App) setDefaultConfigOptions() {
@@ -163,6 +179,279 @@ func (a *App) mergeFlags(dst *FlagSet, register func(f *FlagSet), keepExisting b
 	mergeFlagSets(dst, tmp, keepExisting)
 }
 
+func (a *App) invalidateFlagDefinitionCaches() {
+	if a == nil {
+		return
+	}
+	a.cacheMu.Lock()
+	a.cachedRootFlagDef = nil
+	a.cachedRootFlagDefOK = false
+	a.cachedCommandFlagDefs = nil
+	a.cacheMu.Unlock()
+	if a.Root != nil {
+		a.Root.invalidateFlagDefinitionCache()
+	}
+	for _, cmd := range a.Commands {
+		if cmd != nil {
+			cmd.invalidateFlagDefinitionCache()
+		}
+	}
+}
+
+func (c *Command) invalidateFlagDefinitionCache() {
+	if c == nil {
+		return
+	}
+	c.cachedLocalFlagDef = nil
+	c.cachedLocalFlagDefOK = false
+	for _, sub := range c.SubCommands {
+		if sub != nil {
+			sub.invalidateFlagDefinitionCache()
+		}
+	}
+}
+
+func (a *App) rootFlagDefinition(root *Command) (*flagSetDef, bool) {
+	a.cacheMu.Lock()
+	if a.cachedRootFlagDefOK {
+		def := a.cachedRootFlagDef
+		a.cacheMu.Unlock()
+		return def, def != nil && def.Cacheable
+	}
+	a.cacheMu.Unlock()
+
+	flagSet := NewFlagSet(a.Name, ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	a.configureFlagSet(flagSet, root, root)
+	def := buildFlagSetDefFromFlagSet(flagSet)
+
+	a.cacheMu.Lock()
+	a.cachedRootFlagDef = def
+	a.cachedRootFlagDefOK = true
+	a.cacheMu.Unlock()
+	return def, def != nil && def.Cacheable
+}
+
+func (c *Command) localFlagDefinition() (*flagSetDef, bool) {
+	if c == nil || c.SetFlags == nil {
+		return nil, false
+	}
+	if c.cachedLocalFlagDefOK {
+		return c.cachedLocalFlagDef, c.cachedLocalFlagDef != nil && c.cachedLocalFlagDef.Cacheable
+	}
+
+	flagSet := NewFlagSet(c.Name, ContinueOnError)
+	flagSet.SetOutput(io.Discard)
+	c.SetFlags(flagSet)
+	def := buildFlagSetDefFromFlagSet(flagSet)
+	c.cachedLocalFlagDef = def
+	c.cachedLocalFlagDefOK = true
+	return def, def != nil && def.Cacheable
+}
+
+func mergeFlagDefs(rootDef *flagSetDef, localDef *flagSetDef, name string) *flagSetDef {
+	switch {
+	case rootDef == nil && localDef == nil:
+		return &flagSetDef{Name: name, Cacheable: true}
+	case localDef == nil:
+		return &flagSetDef{
+			Name:      name,
+			Flags:     rootDef.Flags,
+			ByName:    rootDef.ByName,
+			ByShort:   rootDef.ByShort,
+			Cacheable: rootDef.Cacheable,
+		}
+	case rootDef == nil:
+		return &flagSetDef{
+			Name:      name,
+			Flags:     localDef.Flags,
+			ByName:    localDef.ByName,
+			ByShort:   localDef.ByShort,
+			Cacheable: localDef.Cacheable,
+		}
+	}
+
+	merged := &flagSetDef{
+		Name:      name,
+		Flags:     make([]*flagDef, 0, len(rootDef.Flags)+len(localDef.Flags)),
+		ByName:    make(map[string]int, len(rootDef.Flags)+len(localDef.Flags)),
+		ByShort:   make(map[string]int, len(rootDef.ByShort)+len(localDef.ByShort)),
+		Cacheable: rootDef.Cacheable && localDef.Cacheable,
+	}
+
+	i, j := 0, 0
+	appendFlag := func(def *flagDef) {
+		index := len(merged.Flags)
+		if _, exists := merged.ByName[def.Name]; exists {
+			panic("flag redefined: " + def.Name)
+		}
+		if def.Shorthand != "" {
+			if _, exists := merged.ByShort[def.Shorthand]; exists {
+				panic("shorthand redefined: " + def.Shorthand)
+			}
+		}
+		merged.Flags = append(merged.Flags, def)
+		merged.ByName[def.Name] = index
+		if def.Shorthand != "" {
+			merged.ByShort[def.Shorthand] = index
+		}
+	}
+
+	for i < len(rootDef.Flags) && j < len(localDef.Flags) {
+		rootFlag := rootDef.Flags[i]
+		localFlag := localDef.Flags[j]
+		cmp := strings.Compare(rootFlag.Name, localFlag.Name)
+		if cmp == 0 {
+			panic("flag redefined: " + rootFlag.Name)
+		}
+		if cmp < 0 {
+			appendFlag(rootFlag)
+			i++
+			continue
+		}
+		appendFlag(localFlag)
+		j++
+	}
+	for ; i < len(rootDef.Flags); i++ {
+		appendFlag(rootDef.Flags[i])
+	}
+	for ; j < len(localDef.Flags); j++ {
+		appendFlag(localDef.Flags[j])
+	}
+	return merged
+}
+
+func (a *App) commandFlagDefinition(root *Command, cmd *Command) (*flagSetDef, bool) {
+	if a == nil || cmd == nil {
+		return nil, false
+	}
+	if cmd == root {
+		return a.rootFlagDefinition(root)
+	}
+
+	a.cacheMu.Lock()
+	if def := a.cachedCommandFlagDefs[cmd]; def != nil {
+		a.cacheMu.Unlock()
+		return def, def.Cacheable
+	}
+	a.cacheMu.Unlock()
+
+	rootDef, rootOK := a.rootFlagDefinition(root)
+	var localDef *flagSetDef
+	localOK := true
+	if cmd.SetFlags != nil {
+		localDef, localOK = cmd.localFlagDefinition()
+	}
+	if !rootOK || !localOK {
+		return nil, false
+	}
+
+	merged := mergeFlagDefs(rootDef, localDef, cmd.Name)
+	a.cacheMu.Lock()
+	if a.cachedCommandFlagDefs == nil {
+		a.cachedCommandFlagDefs = make(map[*Command]*flagSetDef)
+	}
+	a.cachedCommandFlagDefs[cmd] = merged
+	a.cacheMu.Unlock()
+	return merged, merged.Cacheable
+}
+
+func (a *App) rootCommandCompletionValues() []string {
+	results := a.rootCommandCompletionResults()
+	if len(results) == 0 {
+		return nil
+	}
+
+	a.cacheMu.Lock()
+	values := a.cachedRootCommandCompletionValues
+	a.cacheMu.Unlock()
+	if len(values) != 0 {
+		return values
+	}
+
+	values = completionValues(results)
+	a.cacheMu.Lock()
+	if len(a.cachedRootCommandCompletionValues) == 0 {
+		a.cachedRootCommandCompletionValues = values
+	} else {
+		values = a.cachedRootCommandCompletionValues
+	}
+	a.cacheMu.Unlock()
+	return values
+}
+
+func (a *App) rootCommandCompletionResults() []CompletionResult {
+	commands := a.rootSubCommands()
+	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
+
+	a.cacheMu.Lock()
+	if sig == a.cachedRootCommandCompletionSig && a.cachedRootCommandCompletionOK {
+		results := a.cachedRootCommandCompletionResults
+		a.cacheMu.Unlock()
+		return results
+	}
+	a.cacheMu.Unlock()
+
+	results := uniqueSortedCompletionResults(appendCommandCompletionResults(nil, commands), "")
+
+	a.cacheMu.Lock()
+	a.cachedRootCommandCompletionResults = results
+	a.cachedRootCommandCompletionValues = nil
+	a.cachedRootCommandCompletionSig = sig
+	a.cachedRootCommandCompletionOK = true
+	a.cacheMu.Unlock()
+	return results
+}
+
+func (a *App) rootCompletionValues() []string {
+	results := a.rootCompletionResults()
+	if len(results) == 0 {
+		return nil
+	}
+
+	a.cacheMu.Lock()
+	values := a.cachedRootCompletionValues
+	a.cacheMu.Unlock()
+	if len(values) != 0 {
+		return values
+	}
+
+	values = completionValues(results)
+	a.cacheMu.Lock()
+	if len(a.cachedRootCompletionValues) == 0 {
+		a.cachedRootCompletionValues = values
+	} else {
+		values = a.cachedRootCompletionValues
+	}
+	a.cacheMu.Unlock()
+	return values
+}
+
+func (a *App) rootCompletionResults() []CompletionResult {
+	commands := a.rootSubCommands()
+	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
+
+	a.cacheMu.Lock()
+	if sig == a.cachedRootCompletionSig && a.cachedRootCompletionOK {
+		results := a.cachedRootCompletionResults
+		a.cacheMu.Unlock()
+		return results
+	}
+	a.cacheMu.Unlock()
+
+	results := append([]CompletionResult(nil), a.rootCommandCompletionResults()...)
+	results = appendBuiltinCompletionResults(results, a.builtinSpecsForCommands(commands))
+	results = uniqueSortedCompletionResults(results, "")
+
+	a.cacheMu.Lock()
+	a.cachedRootCompletionResults = results
+	a.cachedRootCompletionValues = nil
+	a.cachedRootCompletionSig = sig
+	a.cachedRootCompletionOK = true
+	a.cacheMu.Unlock()
+	return results
+}
+
 func mergeFlagSets(dst *FlagSet, src *FlagSet, keepExisting bool) {
 	if dst == nil || src == nil {
 		return
@@ -185,9 +474,36 @@ func mergeFlagSets(dst *FlagSet, src *FlagSet, keepExisting bool) {
 		}
 
 		cloned := cloneFlag(flag)
-		dst.formal = append(dst.formal, cloned)
-		dst.sorted = false
+		dst.appendFormalFlag(cloned)
 	})
+}
+
+func mergeOwnedFlagSets(dst *FlagSet, src *FlagSet, keepExisting bool) {
+	if dst == nil || src == nil {
+		return
+	}
+	for _, flag := range src.sortedFlags() {
+		if _, exists := dst.Lookup(flag.Name); exists {
+			if keepExisting {
+				continue
+			}
+			panic(dst.sprintf("flag redefined: %s", flag.Name))
+		}
+		if flag.Shorthand != "" {
+			if _, exists := dst.LookupShort(flag.Shorthand); exists {
+				if keepExisting {
+					continue
+				}
+				panic(dst.sprintf("shorthand redefined: %s", flag.Shorthand))
+			}
+		}
+		dst.formal = append(dst.formal, flag)
+		dst.isSet = append(dst.isSet, false)
+	}
+	sortFlags(dst.formal)
+	dst.def = nil
+	dst.sortedFormal = nil
+	dst.rebuildFlagIndexes()
 }
 
 func cloneFlag(flag *Flag) *Flag {
@@ -210,6 +526,9 @@ func cloneFlag(flag *Flag) *Flag {
 		Example:    flag.Example,
 		Completion: flag.Completion,
 		Extensions: cloneExtensions(flag.Extensions),
+		index:      flag.index,
+		def:        flag.def,
+		rt:         flag.rt,
 	}
 }
 
@@ -219,9 +538,24 @@ func cloneFlagSetDefinition(src *FlagSet, name string, output io.Writer) *FlagSe
 	if src == nil || len(src.formal) == 0 {
 		return flagSet
 	}
-
+	if src.def != nil && src.def.Cacheable {
+		return instantiateFlagSetFromDef(src.def, name, output)
+	}
 	flagSet.formal = src.formal[:len(src.formal):len(src.formal)]
-	flagSet.sorted = src.sorted
+	flagSet.sortedFormal = src.sortedFormal[:len(src.sortedFormal):len(src.sortedFormal)]
+	if len(src.byName) > 0 {
+		flagSet.byName = make(map[string]int, len(src.byName))
+		for key, value := range src.byName {
+			flagSet.byName[key] = value
+		}
+	}
+	if len(src.byShort) > 0 {
+		flagSet.byShort = make(map[string]int, len(src.byShort))
+		for key, value := range src.byShort {
+			flagSet.byShort[key] = value
+		}
+	}
+	flagSet.isSet = make([]bool, len(src.formal))
 	return flagSet
 }
 
@@ -242,6 +576,11 @@ type Command struct {
 	OnError     ErrorHook
 	Middlewares []Middleware
 	Observers   []Observer
+	// Extensions carries custom metadata for integrations and tooling.
+	// Slice and map values are cloned when the library copies metadata, but
+	// opaque pointer or custom object payloads are shared by reference. Callers
+	// that need full isolation should store immutable values or clone payloads
+	// themselves before attaching them here.
 	Extensions  map[string]any
 	Run         func(ctx context.Context, cmd *Command, args []string) error
 	SetFlags    func(f *FlagSet)
@@ -250,6 +589,9 @@ type Command struct {
 	alias string
 	flag  *FlagSet
 	app   *App
+
+	cachedLocalFlagDef   *flagSetDef
+	cachedLocalFlagDefOK bool
 }
 
 // GetAlias get alias
@@ -275,7 +617,7 @@ func (c *Command) Usage() {
 	}
 
 	if c.Long != "" {
-		runTemplate(out, c.Long, c)
+		writeCommandLong(out, c.Long, c)
 		fmt.Fprintf(out, "\n\n")
 	}
 
@@ -330,6 +672,7 @@ func (a *App) ConfigureFlags(f func(f *FlagSet)) {
 		return
 	}
 	a.SetFlags = f
+	a.invalidateFlagDefinitionCaches()
 }
 
 // UseUsageTemplate replaces the app usage template.
@@ -346,6 +689,11 @@ func (a *App) AddCommands(cmds ...*Command) {
 		return
 	}
 	a.Commands = append(a.Commands, cmds...)
+	for _, cmd := range cmds {
+		if cmd != nil {
+			cmd.invalidateFlagDefinitionCache()
+		}
+	}
 }
 
 // SetRootCommand assigns the app root command.
@@ -354,6 +702,10 @@ func (a *App) SetRootCommand(root *Command) {
 		return
 	}
 	a.Root = root
+	a.invalidateFlagDefinitionCaches()
+	if root != nil {
+		root.invalidateFlagDefinitionCache()
+	}
 }
 
 // Execute runs the app with the provided args.
@@ -484,6 +836,12 @@ func (a *App) rootSubCommands() Commands {
 	a.cachedBuiltinSpecsOK = false
 	a.cachedSyntheticRoot = nil
 	a.cachedSyntheticRootOK = false
+	a.cachedRootCommandCompletionValues = nil
+	a.cachedRootCommandCompletionResults = nil
+	a.cachedRootCommandCompletionOK = false
+	a.cachedRootCompletionValues = nil
+	a.cachedRootCompletionResults = nil
+	a.cachedRootCompletionOK = false
 	return subCommands
 }
 
@@ -870,16 +1228,7 @@ func (a *App) ExitStatus() int {
 
 func (a *App) Usage() {
 	root := a.rootCommand()
-	data := struct {
-		Name        string
-		Short       string
-		Long        string
-		UsageLine   string
-		Commands    Commands
-		Aliases     []string
-		Examples    []string
-		Positionals []PositionalArg
-	}{
+	data := usageRenderData{
 		Name:        a.Name,
 		Short:       root.Short,
 		Long:        root.Long,
@@ -890,7 +1239,7 @@ func (a *App) Usage() {
 		Positionals: root.Positionals,
 	}
 	bw := bufio.NewWriter(a.Err)
-	runTemplate(bw, a.UsageTemplate, data)
+	writeUsageTemplate(bw, a.UsageTemplate, data)
 	if a.flag != nil {
 		printFlagSections(bw, "Global Flags", a.flag)
 	}
@@ -926,6 +1275,17 @@ func (a *App) help(args []string) error {
 type parsedFlagValue struct {
 	Name  string
 	Value string
+}
+
+type usageRenderData struct {
+	Name        string
+	Short       string
+	Long        string
+	UsageLine   string
+	Commands    Commands
+	Aliases     []string
+	Examples    []string
+	Positionals []PositionalArg
 }
 
 func (a *App) parseAppFlags(args []string) ([]string, []parsedFlagValue, error) {
@@ -967,10 +1327,20 @@ func (a *App) parseAppFlags(args []string) ([]string, []parsedFlagValue, error) 
 		i += consumed
 
 		if len(a.flag.actual) > beforeActual {
-			flag := a.flag.actual[len(a.flag.actual)-1]
+			flagIndex := a.flag.actual[len(a.flag.actual)-1]
+			if flagIndex < 0 || flagIndex >= len(a.flag.formal) {
+				continue
+			}
+			flagDef := a.flag.defAt(flagIndex)
+			value := a.flag.valueAt(flagIndex)
+			if flagDef == nil || value == nil {
+				flag := a.flag.flagViewAt(flagIndex)
+				flagDef = flag.def
+				value = flag.Value
+			}
 			parsed = append(parsed, parsedFlagValue{
-				Name:  flag.Name,
-				Value: flag.Value.String(),
+				Name:  flagDef.Name,
+				Value: value.String(),
 			})
 		}
 	}
@@ -1214,25 +1584,138 @@ func flagDefaultDescription(flag *Flag) string {
 	return flag.DefValue
 }
 
-func runTemplate(w io.Writer, text string, data interface{}) {
-	t := parseTemplate("top", text)
-	ew := &errWriter{w: w}
-	err := t.Execute(ew, data)
-	if ew.err != nil {
-		if strings.Contains(ew.err.Error(), "pipe") {
-			os.Exit(1)
-		}
+func writeCommandLong(w io.Writer, text string, cmd *Command) {
+	if text == "" {
+		return
 	}
-	if err != nil {
-		panic(err)
+	io.WriteString(w, renderSimpleTemplate(text, simpleTemplateFields{
+		"Name":      cmd.Name,
+		"Short":     cmd.Short,
+		"Long":      cmd.Long,
+		"UsageLine": cmd.UsageLine,
+		"Group":     cmd.Group,
+		"Alias":     cmd.GetAlias(),
+	}))
+}
+
+func writeUsageTemplate(w io.Writer, text string, data usageRenderData) {
+	if text == defaultUsageTemplate {
+		writeDefaultUsageTemplate(w, data)
+		return
+	}
+	if !strings.Contains(text, "{{") {
+		io.WriteString(w, text)
+		return
+	}
+	io.WriteString(w, renderSimpleTemplate(text, simpleTemplateFields{
+		"Name":      data.Name,
+		"Short":     data.Short,
+		"Long":      data.Long,
+		"UsageLine": data.UsageLine,
+	}))
+}
+
+func writeDefaultUsageTemplate(w io.Writer, data usageRenderData) {
+	io.WriteString(w, "\n")
+	io.WriteString(w, data.Name)
+	io.WriteString(w, " - ")
+	io.WriteString(w, data.Short)
+	io.WriteString(w, "\n\nUsage:\n\n  ")
+	if data.UsageLine != "" {
+		io.WriteString(w, data.UsageLine)
+	} else {
+		io.WriteString(w, data.Name)
+		io.WriteString(w, " [flags]")
+		if len(data.Commands) > 0 {
+			io.WriteString(w, " <command> [subcommand]")
+		}
+		io.WriteString(w, " [args]")
+	}
+	io.WriteString(w, "\n\n")
+	if trimmedLong := strings.TrimSpace(data.Long); trimmedLong != "" {
+		io.WriteString(w, trimmedLong)
+		io.WriteString(w, "\n\n")
+	}
+	if len(data.Commands) > 0 {
+		io.WriteString(w, "Available Commands:\n")
+		for _, command := range data.Commands {
+			if command == nil || command.Hidden {
+				continue
+			}
+			io.WriteString(w, "  ")
+			writePaddedString(w, command.Name, 11)
+			io.WriteString(w, " ")
+			io.WriteString(w, command.Short)
+			io.WriteString(w, "\n")
+		}
+		io.WriteString(w, "\nUse \"")
+		io.WriteString(w, data.Name)
+		io.WriteString(w, " help [command]\" for more information about a command.\n")
 	}
 }
 
-func parseTemplate(name string, text string) *template.Template {
-	t := template.New(name)
-	t.Funcs(template.FuncMap{
-		"trim":       strings.TrimSpace,
-		"capitalize": capitalize,
-	})
-	return template.Must(t.Parse(text))
+func writePaddedString(w io.Writer, value string, width int) {
+	io.WriteString(w, value)
+	for padding := width - len(value); padding > 0; padding-- {
+		io.WriteString(w, " ")
+	}
+}
+
+type simpleTemplateFields map[string]string
+
+func renderSimpleTemplate(text string, fields simpleTemplateFields) string {
+	if text == "" || !strings.Contains(text, "{{") {
+		return text
+	}
+
+	var b strings.Builder
+	b.Grow(len(text))
+	for {
+		start := strings.Index(text, "{{")
+		if start < 0 {
+			b.WriteString(text)
+			break
+		}
+		end := strings.Index(text[start+2:], "}}")
+		if end < 0 {
+			b.WriteString(text)
+			break
+		}
+		end += start + 2
+		b.WriteString(text[:start])
+		tag := strings.TrimSpace(text[start+2 : end])
+		if value, ok := resolveSimpleTemplateTag(tag, fields); ok {
+			b.WriteString(value)
+		} else {
+			b.WriteString(text[start : end+2])
+		}
+		text = text[end+2:]
+	}
+	return b.String()
+}
+
+func resolveSimpleTemplateTag(tag string, fields simpleTemplateFields) (string, bool) {
+	if tag == "" || tag[0] != '.' {
+		return "", false
+	}
+	name := tag[1:]
+	transform := ""
+	if pipe := strings.IndexByte(name, '|'); pipe >= 0 {
+		transform = strings.TrimSpace(name[pipe+1:])
+		name = strings.TrimSpace(name[:pipe])
+	}
+	value, ok := fields[name]
+	if !ok {
+		return "", false
+	}
+	switch transform {
+	case "":
+		return value, true
+	case "trim":
+		return strings.TrimSpace(value), true
+	case "capitalize":
+		return capitalize(value), true
+	default:
+		return "", false
+	}
 }
