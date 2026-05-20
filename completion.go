@@ -10,6 +10,35 @@ import (
 
 var errCompletionUsage = errors.New("completion shell must be one of: bash, zsh, fish, powershell")
 
+const (
+	completionKindCommand    = "command"
+	completionKindFlag       = "flag"
+	completionKindValue      = "value"
+	completionKindPositional = "positional"
+	completionKindBuiltin    = "builtin"
+)
+
+type CompletionResult struct {
+	Value       string
+	Description string
+	Kind        string
+}
+
+type DetailedLineCompleter interface {
+	CompleteLineDetailed(line string, cursor int) []CompletionResult
+}
+
+type completionState struct {
+	root          *Command
+	rootBuiltins  []string
+	current       string
+	currentFlags  *FlagSet
+	currentCmds   Commands
+	currentCmd    *Command
+	expectingFlag *Flag
+	positional    []string
+}
+
 func (a *App) runBuiltinCommand(args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
@@ -83,6 +112,170 @@ func (a *App) runComplete(args []string) error {
 }
 
 func (a *App) complete(args []string) []string {
+	state := a.resolveCompletionState(args)
+
+	if state.currentCmd == nil {
+		if suggestions, handled := a.completeBuiltin(state.positional, state.current); handled {
+			return suggestions
+		}
+	}
+
+	if state.expectingFlag != nil {
+		valueCommand := state.currentCmd
+		if valueCommand == nil {
+			valueCommand = state.root
+		}
+		return valueCompletions(a, valueCommand, state.expectingFlag, state.positional, state.current, "")
+	}
+
+	suggestions := make([]string, 0)
+	if state.current == "" {
+		suggestions = make([]string, 0, estimateStringCompletionCapacity(state.currentCmds, state.currentFlags, state.currentCmd == nil, len(state.rootBuiltins)))
+		suggestions = appendCommandCompletionValues(suggestions, state.currentCmds)
+		if state.currentCmd == nil {
+			suggestions = append(suggestions, state.rootBuiltins...)
+		}
+		suggestions = appendFlagCompletionValues(suggestions, state.currentFlags)
+		target := state.currentCmd
+		if target == nil && state.root.Runnable() {
+			target = state.root
+		}
+		if target != nil {
+			suggestions = append(suggestions, positionalValueCompletions(a, target, target.positionalArgForIndex(len(state.positional)), state.positional, "")...)
+		}
+		return uniqueSortedStrings(suggestions)
+	}
+
+	if strings.HasPrefix(state.current, "-") {
+		if flag, consumed, needsValue, attachedValue, hasAttachedValue := parseCompletionFlag(state.currentFlags, state.current); consumed && (needsValue || hasAttachedValue) {
+			prefix := ""
+			if hasAttachedValue {
+				prefix = state.current[:len(state.current)-len(attachedValue)]
+			}
+			valueCommand := state.currentCmd
+			if valueCommand == nil {
+				valueCommand = state.root
+			}
+			return valueCompletions(a, valueCommand, flag, state.positional, attachedValue, prefix)
+		}
+		return uniqueSortedPrefixStrings(appendFlagCompletionValues(nil, state.currentFlags), state.current)
+	}
+
+	commandSuggestions := make([]string, 0, visibleCommandCompletionCount(state.currentCmds))
+	commandSuggestions = uniqueSortedPrefixStrings(appendCommandCompletionValues(commandSuggestions, state.currentCmds), state.current)
+	if state.currentCmd == nil {
+		commandSuggestions = append(commandSuggestions, uniqueSortedPrefixStrings(append([]string(nil), state.rootBuiltins...), state.current)...)
+		commandSuggestions = uniqueSortedStrings(commandSuggestions)
+	}
+	if len(commandSuggestions) > 0 {
+		return commandSuggestions
+	}
+
+	target := state.currentCmd
+	if target == nil && state.root.Runnable() {
+		target = state.root
+	}
+	if target == nil {
+		return nil
+	}
+	return positionalValueCompletions(a, target, target.positionalArgForIndex(len(state.positional)), state.positional, state.current)
+}
+
+func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
+	if len(args) == 0 {
+		return nil, false
+	}
+
+	switch args[0] {
+	case "completion":
+		if len(args) == 1 {
+			return filterPrefix([]string{"bash", "zsh", "fish", "powershell"}, current), true
+		}
+		return nil, true
+	case "spec":
+		if len(args) == 1 {
+			return filterPrefix([]string{"json"}, current), true
+		}
+		return nil, true
+	case "docs":
+		if len(args) == 1 {
+			return filterPrefix([]string{"markdown", "man"}, current), true
+		}
+		return nil, true
+	default:
+		return nil, false
+	}
+}
+
+func (a *App) completeDetailed(args []string) []CompletionResult {
+	state := a.resolveCompletionState(args)
+
+	if state.currentCmd == nil {
+		if suggestions, handled := a.completeBuiltinDetailed(state.positional, state.current); handled {
+			return suggestions
+		}
+	}
+
+	if state.expectingFlag != nil {
+		valueCommand := state.currentCmd
+		if valueCommand == nil {
+			valueCommand = state.root
+		}
+		return valueCompletionsDetailed(a, valueCommand, state.expectingFlag, state.positional, state.current, "", completionKindValue)
+	}
+
+	if state.current == "" {
+		suggestions := make([]CompletionResult, 0)
+		suggestions = appendCommandCompletionResults(suggestions, state.currentCmds)
+		if state.currentCmd == nil {
+			suggestions = appendBuiltinCompletionResults(suggestions, state.rootBuiltins)
+		}
+		suggestions = appendFlagCompletionResults(suggestions, state.currentFlags)
+		target := state.currentCmd
+		if target == nil && state.root.Runnable() {
+			target = state.root
+		}
+		if target != nil {
+			suggestions = append(suggestions, positionalValueCompletionsDetailed(a, target, target.positionalArgForIndex(len(state.positional)), state.positional, "")...)
+		}
+		return uniqueSortedCompletionResults(suggestions, "")
+	}
+
+	if strings.HasPrefix(state.current, "-") {
+		if flag, consumed, needsValue, attachedValue, hasAttachedValue := parseCompletionFlag(state.currentFlags, state.current); consumed && (needsValue || hasAttachedValue) {
+			prefix := ""
+			if hasAttachedValue {
+				prefix = state.current[:len(state.current)-len(attachedValue)]
+			}
+			valueCommand := state.currentCmd
+			if valueCommand == nil {
+				valueCommand = state.root
+			}
+			return valueCompletionsDetailed(a, valueCommand, flag, state.positional, attachedValue, prefix, completionKindValue)
+		}
+		return uniqueSortedCompletionResults(appendFlagCompletionResults(nil, state.currentFlags), state.current)
+	}
+
+	commandSuggestions := uniqueSortedCompletionResults(appendCommandCompletionResults(nil, state.currentCmds), state.current)
+	if state.currentCmd == nil {
+		commandSuggestions = append(commandSuggestions, uniqueSortedCompletionResults(appendBuiltinCompletionResults(nil, state.rootBuiltins), state.current)...)
+		commandSuggestions = uniqueSortedCompletionResults(commandSuggestions, "")
+	}
+	if len(commandSuggestions) > 0 {
+		return commandSuggestions
+	}
+
+	target := state.currentCmd
+	if target == nil && state.root.Runnable() {
+		target = state.root
+	}
+	if target == nil {
+		return nil
+	}
+	return positionalValueCompletionsDetailed(a, target, target.positionalArgForIndex(len(state.positional)), state.positional, state.current)
+}
+
+func (a *App) resolveCompletionState(args []string) completionState {
 	root := a.rootCommand()
 	rootBuiltins := a.builtinSpecsForCommands(root.SubCommands)
 	current := ""
@@ -143,92 +336,40 @@ func (a *App) complete(args []string) []string {
 		currentCommands = cmd.SubCommands
 	}
 
-	if currentCommand == nil {
-		if suggestions, handled := a.completeBuiltin(positionalArgs, current); handled {
-			return suggestions
-		}
+	return completionState{
+		root:          root,
+		rootBuiltins:  rootBuiltins,
+		current:       current,
+		currentFlags:  currentFlags,
+		currentCmds:   currentCommands,
+		currentCmd:    currentCommand,
+		expectingFlag: expectingValue,
+		positional:    positionalArgs,
 	}
-
-	if expectingValue != nil {
-		valueCommand := currentCommand
-		if valueCommand == nil {
-			valueCommand = root
-		}
-		return valueCompletions(a, valueCommand, expectingValue, positionalArgs, current, "")
-	}
-
-	suggestions := make([]string, 0)
-	if current == "" {
-		suggestions = appendCommandCompletionValues(suggestions, currentCommands)
-		if currentCommand == nil {
-			suggestions = append(suggestions, rootBuiltins...)
-		}
-		suggestions = appendFlagCompletionValues(suggestions, currentFlags)
-		target := currentCommand
-		if target == nil && root.Runnable() {
-			target = root
-		}
-		if target != nil {
-			suggestions = append(suggestions, positionalValueCompletions(a, target, target.positionalArgForIndex(len(positionalArgs)), positionalArgs, "")...)
-		}
-		return uniqueSortedStrings(suggestions)
-	}
-
-	if strings.HasPrefix(current, "-") {
-		if flag, consumed, needsValue, attachedValue, hasAttachedValue := parseCompletionFlag(currentFlags, current); consumed && (needsValue || hasAttachedValue) {
-			prefix := ""
-			if hasAttachedValue {
-				prefix = current[:len(current)-len(attachedValue)]
-			}
-			valueCommand := currentCommand
-			if valueCommand == nil {
-				valueCommand = root
-			}
-			return valueCompletions(a, valueCommand, flag, positionalArgs, attachedValue, prefix)
-		}
-		return uniqueSortedPrefixStrings(appendFlagCompletionValues(nil, currentFlags), current)
-	}
-
-	commandSuggestions := uniqueSortedPrefixStrings(appendCommandCompletionValues(nil, currentCommands), current)
-	if currentCommand == nil {
-		commandSuggestions = append(commandSuggestions, uniqueSortedPrefixStrings(append([]string(nil), rootBuiltins...), current)...)
-		commandSuggestions = uniqueSortedStrings(commandSuggestions)
-	}
-	if len(commandSuggestions) > 0 {
-		return commandSuggestions
-	}
-
-	target := currentCommand
-	if target == nil && root.Runnable() {
-		target = root
-	}
-	if target == nil {
-		return nil
-	}
-	return positionalValueCompletions(a, target, target.positionalArgForIndex(len(positionalArgs)), positionalArgs, current)
 }
 
-func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
+func (a *App) completeBuiltinDetailed(args []string, current string) ([]CompletionResult, bool) {
 	if len(args) == 0 {
 		return nil, false
 	}
 
+	var values []string
 	switch args[0] {
 	case "completion":
 		if len(args) == 1 {
-			return filterPrefix([]string{"bash", "zsh", "fish", "powershell"}, current), true
+			values = filterPrefix([]string{"bash", "zsh", "fish", "powershell"}, current)
 		}
-		return nil, true
+		return completionResultsFromValues(values, completionKindValue), true
 	case "spec":
 		if len(args) == 1 {
-			return filterPrefix([]string{"json"}, current), true
+			values = filterPrefix([]string{"json"}, current)
 		}
-		return nil, true
+		return completionResultsFromValues(values, completionKindValue), true
 	case "docs":
 		if len(args) == 1 {
-			return filterPrefix([]string{"markdown", "man"}, current), true
+			values = filterPrefix([]string{"markdown", "man"}, current)
 		}
-		return nil, true
+		return completionResultsFromValues(values, completionKindValue), true
 	default:
 		return nil, false
 	}
@@ -331,6 +472,10 @@ func filterPrefix(values []string, prefix string) []string {
 }
 
 func valueCompletions(app *App, command *Command, flag *Flag, args []string, current string, prefix string) []string {
+	return completionValues(valueCompletionsDetailed(app, command, flag, args, current, prefix, completionKindValue))
+}
+
+func valueCompletionsDetailed(app *App, command *Command, flag *Flag, args []string, current string, prefix string, kind string) []CompletionResult {
 	if flag == nil {
 		return nil
 	}
@@ -351,14 +496,14 @@ func valueCompletions(app *App, command *Command, flag *Flag, args []string, cur
 
 	values = uniqueSortedPrefixStrings(values, current)
 	if prefix == "" {
-		return values
+		return completionResultsFromValues(values, kind)
 	}
 
 	prefixed := make([]string, 0, len(values))
 	for _, value := range values {
 		prefixed = append(prefixed, prefix+value)
 	}
-	return prefixed
+	return completionResultsFromValues(prefixed, kind)
 }
 
 func uniqueSortedStrings(values []string) []string {
@@ -397,17 +542,38 @@ func uniqueSortedPrefixStrings(values []string, prefix string) []string {
 }
 
 func appendCommandCompletionValues(dst []string, commands Commands) []string {
+	return appendCompletionResultValues(dst, appendCommandCompletionResults(nil, commands))
+}
+
+func appendCommandCompletionResults(dst []CompletionResult, commands Commands) []CompletionResult {
 	for _, command := range commands {
 		if command == nil || command.Hidden {
 			continue
 		}
-		dst = append(dst, command.Name)
-		dst = append(dst, command.Aliases...)
+		dst = append(dst, CompletionResult{
+			Value:       command.Name,
+			Description: command.Short,
+			Kind:        completionKindForCommand(command),
+		})
+		for _, alias := range command.Aliases {
+			if alias == "" {
+				continue
+			}
+			dst = append(dst, CompletionResult{
+				Value:       alias,
+				Description: command.Short,
+				Kind:        completionKindForCommand(command),
+			})
+		}
 	}
 	return dst
 }
 
 func appendFlagCompletionValues(dst []string, flagSet *FlagSet) []string {
+	return appendCompletionResultValues(dst, appendFlagCompletionResults(nil, flagSet))
+}
+
+func appendFlagCompletionResults(dst []CompletionResult, flagSet *FlagSet) []CompletionResult {
 	if flagSet == nil {
 		return dst
 	}
@@ -416,11 +582,164 @@ func appendFlagCompletionValues(dst []string, flagSet *FlagSet) []string {
 			return
 		}
 		if flag.Shorthand != "" {
-			dst = append(dst, "-"+flag.Shorthand)
+			dst = append(dst, CompletionResult{
+				Value:       "-" + flag.Shorthand,
+				Description: flagCompletionDescription(flag),
+				Kind:        completionKindForFlag(flag),
+			})
 		}
-		dst = append(dst, "--"+flag.Name)
+		dst = append(dst, CompletionResult{
+			Value:       "--" + flag.Name,
+			Description: flagCompletionDescription(flag),
+			Kind:        completionKindForFlag(flag),
+		})
 	})
 	return dst
+}
+
+func positionalValueCompletionsDetailed(app *App, command *Command, positional *PositionalArg, args []string, current string) []CompletionResult {
+	return completionResultsFromValues(positionalValueCompletions(app, command, positional, args, current), completionKindPositional)
+}
+
+func appendBuiltinCompletionResults(dst []CompletionResult, values []string) []CompletionResult {
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		dst = append(dst, CompletionResult{
+			Value: value,
+			Kind:  completionKindBuiltin,
+		})
+	}
+	return dst
+}
+
+func completionResultsFromValues(values []string, kind string) []CompletionResult {
+	if len(values) == 0 {
+		return nil
+	}
+	results := make([]CompletionResult, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		results = append(results, CompletionResult{
+			Value: value,
+			Kind:  kind,
+		})
+	}
+	return results
+}
+
+func completionValues(results []CompletionResult) []string {
+	if len(results) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(results))
+	for _, result := range results {
+		if result.Value == "" {
+			continue
+		}
+		values = append(values, result.Value)
+	}
+	return values
+}
+
+func appendCompletionResultValues(dst []string, results []CompletionResult) []string {
+	for _, result := range results {
+		if result.Value == "" {
+			continue
+		}
+		dst = append(dst, result.Value)
+	}
+	return dst
+}
+
+func uniqueSortedCompletionResults(results []CompletionResult, prefix string) []CompletionResult {
+	if len(results) == 0 {
+		return nil
+	}
+
+	filtered := make([]CompletionResult, 0, len(results))
+	for _, result := range results {
+		if result.Value == "" {
+			continue
+		}
+		if prefix != "" && !strings.HasPrefix(result.Value, prefix) {
+			continue
+		}
+		filtered = append(filtered, result)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+
+	slices.SortFunc(filtered, func(a, b CompletionResult) int {
+		return strings.Compare(a.Value, b.Value)
+	})
+
+	write := 1
+	for read := 1; read < len(filtered); read++ {
+		if filtered[read].Value == filtered[write-1].Value {
+			continue
+		}
+		filtered[write] = filtered[read]
+		write++
+	}
+	return filtered[:write]
+}
+
+func flagCompletionDescription(flag *Flag) string {
+	if flag == nil {
+		return ""
+	}
+	_, usage := UnquoteUsage(flag)
+	return usage
+}
+
+func completionKindForFlag(_ *Flag) string {
+	return completionKindFlag
+}
+
+func completionKindForCommand(_ *Command) string {
+	return completionKindCommand
+}
+
+func estimateStringCompletionCapacity(commands Commands, flagSet *FlagSet, includeBuiltins bool, builtinCount int) int {
+	capacity := visibleCommandCompletionCount(commands) + visibleFlagCompletionCount(flagSet)
+	if includeBuiltins {
+		capacity += builtinCount
+	}
+	return capacity
+}
+
+func visibleCommandCompletionCount(commands Commands) int {
+	count := 0
+	for _, command := range commands {
+		if command == nil || command.Hidden {
+			continue
+		}
+		count++
+		count += len(command.Aliases)
+	}
+	return count
+}
+
+func visibleFlagCompletionCount(flagSet *FlagSet) int {
+	if flagSet == nil {
+		return 0
+	}
+	count := 0
+	for _, flag := range flagSet.formal {
+		if flag == nil || flag.Hidden {
+			continue
+		}
+		count++
+		if flag.Shorthand != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func shellFuncName(name string) string {

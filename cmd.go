@@ -73,6 +73,12 @@ type App struct {
 	cachedRootSubCommands    Commands
 	cachedRootSubCommandsSig commandsCacheSig
 	cachedRootSubCommandsOK  bool
+	cachedSyntheticRoot      *Command
+	cachedSyntheticRootSig   commandsCacheSig
+	cachedSyntheticRootName  string
+	cachedSyntheticRootShort string
+	cachedSyntheticRootLong  string
+	cachedSyntheticRootOK    bool
 	cachedRootCommandIndex   map[string]*Command
 	cachedRootCommandIndexOK bool
 	cachedBuiltinSpecs       []string
@@ -214,7 +220,7 @@ func cloneFlagSetDefinition(src *FlagSet, name string, output io.Writer) *FlagSe
 		return flagSet
 	}
 
-	flagSet.formal = append(make([]*Flag, 0, len(src.formal)), src.formal...)
+	flagSet.formal = src.formal[:len(src.formal):len(src.formal)]
 	flagSet.sorted = src.sorted
 	return flagSet
 }
@@ -388,6 +394,10 @@ func (a *App) rootCommand() *Command {
 	}
 
 	subCommands := a.rootSubCommands()
+	if a.Root == nil {
+		return a.syntheticRootCommand(subCommands)
+	}
+
 	root := &Command{
 		Name:        a.Name,
 		UsageLine:   a.defaultRootUsageLine(subCommands),
@@ -396,10 +406,6 @@ func (a *App) rootCommand() *Command {
 		SubCommands: subCommands,
 		app:         a,
 	}
-	if a.Root == nil {
-		return root
-	}
-
 	*root = *a.Root
 	root.Name = a.Name
 	root.Short = a.Root.Short
@@ -418,6 +424,37 @@ func (a *App) rootCommand() *Command {
 	root.alias = ""
 	root.flag = nil
 	root.app = a
+	return root
+}
+
+func (a *App) syntheticRootCommand(subCommands Commands) *Command {
+	sig := makeCommandsCacheSig(nil, nil, a.Commands)
+
+	a.cacheMu.Lock()
+	defer a.cacheMu.Unlock()
+
+	if sig == a.cachedSyntheticRootSig &&
+		a.cachedSyntheticRootOK &&
+		a.cachedSyntheticRootName == a.Name &&
+		a.cachedSyntheticRootShort == a.Short &&
+		a.cachedSyntheticRootLong == a.Long {
+		return a.cachedSyntheticRoot
+	}
+
+	root := &Command{
+		Name:        a.Name,
+		UsageLine:   a.defaultRootUsageLine(subCommands),
+		Short:       a.Short,
+		Long:        a.Long,
+		SubCommands: subCommands,
+		app:         a,
+	}
+	a.cachedSyntheticRoot = root
+	a.cachedSyntheticRootSig = sig
+	a.cachedSyntheticRootName = a.Name
+	a.cachedSyntheticRootShort = a.Short
+	a.cachedSyntheticRootLong = a.Long
+	a.cachedSyntheticRootOK = true
 	return root
 }
 
@@ -445,6 +482,8 @@ func (a *App) rootSubCommands() Commands {
 	a.cachedRootCommandIndexOK = false
 	a.cachedBuiltinSpecs = nil
 	a.cachedBuiltinSpecsOK = false
+	a.cachedSyntheticRoot = nil
+	a.cachedSyntheticRootOK = false
 	return subCommands
 }
 
@@ -485,9 +524,9 @@ func commandsContainName(commands Commands, name string) bool {
 
 func (a *App) defaultRootUsageLine(subCommands Commands) string {
 	if len(subCommands) > 0 {
-		return fmt.Sprintf("%s [flags] <command> [subcommand] [args]", a.Name)
+		return a.Name + " [flags] <command> [subcommand] [args]"
 	}
-	return fmt.Sprintf("%s [flags] [args]", a.Name)
+	return a.Name + " [flags] [args]"
 }
 
 func (a *App) shouldRunRoot(root *Command, remainingArgs []string) bool {
@@ -1176,12 +1215,7 @@ func flagDefaultDescription(flag *Flag) string {
 }
 
 func runTemplate(w io.Writer, text string, data interface{}) {
-	t := template.New("top")
-	t.Funcs(template.FuncMap{
-		"trim":       strings.TrimSpace,
-		"capitalize": capitalize,
-	})
-	template.Must(t.Parse(text))
+	t := parseTemplate("top", text)
 	ew := &errWriter{w: w}
 	err := t.Execute(ew, data)
 	if ew.err != nil {
@@ -1192,4 +1226,13 @@ func runTemplate(w io.Writer, text string, data interface{}) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func parseTemplate(name string, text string) *template.Template {
+	t := template.New(name)
+	t.Funcs(template.FuncMap{
+		"trim":       strings.TrimSpace,
+		"capitalize": capitalize,
+	})
+	return template.Must(t.Parse(text))
 }

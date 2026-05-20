@@ -1,0 +1,282 @@
+package cmd
+
+import (
+	"context"
+	"io"
+	"strconv"
+	"testing"
+)
+
+var (
+	benchCtx         = context.Background()
+	benchRunErr      error
+	benchStringsSink []string
+	benchSpecSink    AppSpec
+	benchDocSink     string
+)
+
+func BenchmarkRunSimpleCommand(b *testing.B) {
+	app := benchmarkSimpleApp()
+	args := []string{"hello"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchRunErr = app.Run(benchCtx, args)
+		if benchRunErr != nil {
+			b.Fatalf("run failed: %v", benchRunErr)
+		}
+	}
+}
+
+func BenchmarkRunNestedCommand(b *testing.B) {
+	app := benchmarkNestedApp()
+	args := []string{"admin", "users", "list"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchRunErr = app.Run(benchCtx, args)
+		if benchRunErr != nil {
+			b.Fatalf("run failed: %v", benchRunErr)
+		}
+	}
+}
+
+func BenchmarkRunWideCommandTree1000(b *testing.B) {
+	app := benchmarkWideApp(1000)
+	args := []string{"cmd-0999"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchRunErr = app.Run(benchCtx, args)
+		if benchRunErr != nil {
+			b.Fatalf("run failed: %v", benchRunErr)
+		}
+	}
+}
+
+func BenchmarkRunWithFlags(b *testing.B) {
+	app := benchmarkFlagApp()
+	args := []string{"--verbose", "--profile", "dev", "deploy", "--env", "prod", "--count", "5"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchRunErr = app.Run(benchCtx, args)
+		if benchRunErr != nil {
+			b.Fatalf("run failed: %v", benchRunErr)
+		}
+	}
+}
+
+func BenchmarkFlagSetParse(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var verbose bool
+		var count int
+		var env string
+		flagSet := NewFlagSet("bench", ContinueOnError)
+		flagSet.SetOutput(io.Discard)
+		flagSet.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+		flagSet.IntVar(&count, "count", 0, "item count", "c")
+		flagSet.StringVar(&env, "env", "", "target env", "e")
+
+		if err := flagSet.Parse([]string{"--verbose", "--count", "5", "--env", "prod", "arg1", "arg2"}); err != nil {
+			b.Fatalf("parse failed: %v", err)
+		}
+	}
+}
+
+func BenchmarkCompleteRoot(b *testing.B) {
+	app := benchmarkWideApp(1000)
+	args := []string{""}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchStringsSink = app.complete(args)
+	}
+}
+
+func BenchmarkCompleteNested(b *testing.B) {
+	app := benchmarkNestedCompletionApp()
+	args := []string{"admin", "users", ""}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchStringsSink = app.complete(args)
+	}
+}
+
+func BenchmarkCompleteFlags(b *testing.B) {
+	app := benchmarkFlagApp()
+	args := []string{"deploy", "--e"}
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchStringsSink = app.complete(args)
+	}
+}
+
+func BenchmarkCompleteLineSimple(b *testing.B) {
+	app := benchmarkFlagApp()
+	line := "deploy --e"
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchStringsSink = app.CompleteLine(line, len(line))
+	}
+}
+
+func BenchmarkRunLineSimple(b *testing.B) {
+	app := benchmarkFlagApp()
+	line := "--verbose --profile dev deploy --env prod --count 5"
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchRunErr = app.RunLine(benchCtx, line)
+		if benchRunErr != nil {
+			b.Fatalf("run line failed: %v", benchRunErr)
+		}
+	}
+}
+
+func BenchmarkSpecWideCommandTree(b *testing.B) {
+	app := benchmarkWideApp(1000)
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchSpecSink = app.Spec()
+	}
+}
+
+func BenchmarkMarkdownDocsWideCommandTree(b *testing.B) {
+	app := benchmarkWideApp(1000)
+	spec := app.Spec()
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		benchDocSink = markdownDocs(spec)
+	}
+}
+
+func BenchmarkUsageWideCommandTree(b *testing.B) {
+	app := benchmarkWideApp(1000)
+	app.Err = io.Discard
+
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		app.flag = nil
+		app.Usage()
+	}
+}
+
+func benchmarkSimpleApp() *App {
+	app := NewApp("bench")
+	app.Out = io.Discard
+	app.Err = io.Discard
+	app.Commands = []*Command{
+		{
+			Name:  "hello",
+			Short: "print greeting",
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		},
+	}
+	return app
+}
+
+func benchmarkNestedApp() *App {
+	app := NewApp("bench")
+	app.Out = io.Discard
+	app.Err = io.Discard
+	app.Commands = []*Command{
+		{
+			Name: "admin",
+			SubCommands: []*Command{
+				{
+					Name: "users",
+					SubCommands: []*Command{
+						{
+							Name: "list",
+							Run: func(ctx context.Context, cmd *Command, args []string) error {
+								return nil
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return app
+}
+
+func benchmarkNestedCompletionApp() *App {
+	app := benchmarkNestedApp()
+	app.Commands[0].SubCommands[0].SubCommands = append(app.Commands[0].SubCommands[0].SubCommands,
+		&Command{Name: "create"},
+		&Command{Name: "delete"},
+		&Command{Name: "describe"},
+	)
+	return app
+}
+
+func benchmarkWideApp(count int) *App {
+	app := NewApp("bench")
+	app.Out = io.Discard
+	app.Err = io.Discard
+	commands := make([]*Command, 0, count)
+	for i := 0; i < count; i++ {
+		name := "cmd-" + leftPad4(i)
+		commands = append(commands, &Command{
+			Name:  name,
+			Short: "command " + strconv.Itoa(i),
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		})
+	}
+	app.Commands = commands
+	return app
+}
+
+func benchmarkFlagApp() *App {
+	app := NewApp("bench")
+	app.Out = io.Discard
+	app.Err = io.Discard
+
+	var verbose bool
+	var profile string
+	var env string
+	var count int
+
+	app.SetFlags = func(f *FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+		f.StringVar(&profile, "profile", "", "profile name", "p")
+	}
+	app.Commands = []*Command{
+		{
+			Name: "deploy",
+			SetFlags: func(f *FlagSet) {
+				f.StringVar(&env, "env", "", "target environment", "e")
+				f.IntVar(&count, "count", 0, "instance count", "c")
+				f.SetEnum("env", "dev", "prod", "staging")
+			},
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		},
+	}
+	return app
+}
+
+func leftPad4(v int) string {
+	switch {
+	case v < 10:
+		return "000" + strconv.Itoa(v)
+	case v < 100:
+		return "00" + strconv.Itoa(v)
+	case v < 1000:
+		return "0" + strconv.Itoa(v)
+	default:
+		return strconv.Itoa(v)
+	}
+}
