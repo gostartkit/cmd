@@ -5,6 +5,7 @@ import (
 	"io"
 	"strconv"
 	"testing"
+	"time"
 )
 
 var (
@@ -83,6 +84,68 @@ func BenchmarkFlagSetParse(b *testing.B) {
 			b.Fatalf("parse failed: %v", err)
 		}
 	}
+}
+
+func BenchmarkFlagSetParseManyFlags(b *testing.B) {
+	register := benchmarkManyFlagsRegister(32)
+	cache := buildCachedFlagDefinition("bench", register)
+	args := benchmarkManyFlagsArgs(32)
+
+	b.Run("current-register-parse", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			flagSet := NewFlagSet("bench", ContinueOnError)
+			flagSet.SetOutput(io.Discard)
+			register(flagSet)
+			if err := flagSet.Parse(args); err != nil {
+				b.Fatalf("parse failed: %v", err)
+			}
+		}
+	})
+
+	b.Run("prototype-instantiate-parse", func(b *testing.B) {
+		if !cache.cacheable {
+			b.Fatal("expected cacheable definition")
+		}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			flagSet, ok := instantiateCachedFlagDefinition(cache, "bench", io.Discard)
+			if !ok {
+				b.Fatal("instantiate failed")
+			}
+			if err := flagSet.Parse(args); err != nil {
+				b.Fatalf("parse failed: %v", err)
+			}
+		}
+	})
+}
+
+func BenchmarkFlagSetCloneDefinition(b *testing.B) {
+	register := benchmarkManyFlagsRegister(32)
+	cache := buildCachedFlagDefinition("bench", register)
+
+	b.Run("current-register", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			flagSet := NewFlagSet("bench", ContinueOnError)
+			flagSet.SetOutput(io.Discard)
+			register(flagSet)
+			benchRunErr = nil
+		}
+	})
+
+	b.Run("prototype-instantiate", func(b *testing.B) {
+		if !cache.cacheable {
+			b.Fatal("expected cacheable definition")
+		}
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			flagSet, ok := instantiateCachedFlagDefinition(cache, "bench", io.Discard)
+			if !ok || flagSet == nil {
+				b.Fatal("instantiate failed")
+			}
+		}
+	})
 }
 
 func BenchmarkCompleteRoot(b *testing.B) {
@@ -279,4 +342,42 @@ func leftPad4(v int) string {
 	default:
 		return strconv.Itoa(v)
 	}
+}
+
+func benchmarkManyFlagsRegister(count int) func(f *FlagSet) {
+	return func(f *FlagSet) {
+		for i := 0; i < count; i++ {
+			switch i % 4 {
+			case 0:
+				var verbose bool
+				f.BoolVar(&verbose, "bool-"+strconv.Itoa(i), false, "bool flag", "")
+			case 1:
+				var name string
+				f.StringVar(&name, "string-"+strconv.Itoa(i), "default", "string flag", "")
+			case 2:
+				var number int
+				f.IntVar(&number, "int-"+strconv.Itoa(i), 1, "int flag", "")
+			default:
+				var timeout time.Duration
+				f.DurationVar(&timeout, "duration-"+strconv.Itoa(i), time.Second, "duration flag", "")
+			}
+		}
+	}
+}
+
+func benchmarkManyFlagsArgs(count int) []string {
+	args := make([]string, 0, count*2)
+	for i := 0; i < count; i++ {
+		switch i % 4 {
+		case 0:
+			args = append(args, "--bool-"+strconv.Itoa(i))
+		case 1:
+			args = append(args, "--string-"+strconv.Itoa(i), "value")
+		case 2:
+			args = append(args, "--int-"+strconv.Itoa(i), "7")
+		default:
+			args = append(args, "--duration-"+strconv.Itoa(i), "2s")
+		}
+	}
+	return args
 }

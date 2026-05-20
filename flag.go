@@ -1213,7 +1213,6 @@ func (f *FlagSet) Var(value Value, name string, usage string, shorthand string) 
 		f.formal = make([]*Flag, 0)
 	}
 	f.formal = append(f.formal, flag)
-
 }
 
 // Var defines a flag with the specified name and usage string. The type and
