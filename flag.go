@@ -330,26 +330,31 @@ type FlagSet struct {
 
 // A Flag represents the state of a flag.
 type Flag struct {
-	Name       string // name as it appears on command line
-	Shorthand  string // single-letter shorthand name
-	Usage      string // help message
-	Value      Value  // value as set
-	DefValue   string // default value (as text); for usage message
-	Category   string // logical help group
-	EnvVars    []string
-	ConfigKeys []string
-	Enum       []string
-	Required   bool
-	Hidden     bool
-	Deprecated string
-	Example    string
-	Completion CompletionFunc
+	Name          string // name as it appears on command line
+	Shorthand     string // single-letter shorthand name
+	Usage         string // help message
+	Value         Value  // value as set
+	DefValue      string // default value (as text); for usage message
+	ID            string
+	Kind          string
+	Category      string // logical help group
+	EnvVars       []string
+	ConfigKeys    []string
+	Enum          []string
+	Required      bool
+	Repeatable    bool
+	Hidden        bool
+	Deprecated    string
+	Example       string
+	CompletionKey string
+	Completion    CompletionFunc
 	// Extensions carries custom metadata for integrations and tooling.
 	// Slice and map values are cloned when the library copies metadata, but
 	// opaque pointer or custom object payloads are shared by reference. Callers
 	// that need full isolation should store immutable values or clone payloads
 	// themselves before attaching them here.
 	Extensions map[string]any
+	Surfaces   map[Surface]FlagSurface
 
 	index int
 	def   *flagDef
@@ -733,14 +738,30 @@ func (f *FlagSet) BindConfig(name string, configKeys ...string) {
 	flag.ConfigKeys = append([]string(nil), configKeys...)
 }
 
+func (f *FlagSet) SetID(name, id string) {
+	f.mustLookupFlag(name).ID = id
+}
+
+func (f *FlagSet) SetKind(name, kind string) {
+	f.mustLookupFlag(name).Kind = kind
+}
+
 func (f *FlagSet) SetEnum(name string, values ...string) {
 	flag := f.mustLookupFlag(name)
 	flag.Enum = append([]string(nil), values...)
 }
 
+func (f *FlagSet) SetCompletionKey(name, key string) {
+	f.mustLookupFlag(name).CompletionKey = key
+}
+
 func (f *FlagSet) SetCompletion(name string, fn CompletionFunc) {
 	flag := f.mustLookupFlag(name)
 	flag.Completion = fn
+}
+
+func (f *FlagSet) MarkRepeatable(name string) {
+	f.mustLookupFlag(name).Repeatable = true
 }
 
 func (f *FlagSet) MarkRequired(name string) {
@@ -763,6 +784,14 @@ func (f *FlagSet) SetExample(name, example string) {
 	f.mustLookupFlag(name).Example = example
 }
 
+func (f *FlagSet) SetSurface(name string, surface Surface, override FlagSurface) {
+	flag := f.mustLookupFlag(name)
+	if flag.Surfaces == nil {
+		flag.Surfaces = make(map[Surface]FlagSurface)
+	}
+	flag.Surfaces[surface] = cloneFlagSurface(override)
+}
+
 func BindEnv(name string, envVars ...string) {
 	CommandLine.BindEnv(name, envVars...)
 }
@@ -771,12 +800,28 @@ func BindConfig(name string, configKeys ...string) {
 	CommandLine.BindConfig(name, configKeys...)
 }
 
+func SetID(name, id string) {
+	CommandLine.SetID(name, id)
+}
+
+func SetKind(name, kind string) {
+	CommandLine.SetKind(name, kind)
+}
+
 func SetEnum(name string, values ...string) {
 	CommandLine.SetEnum(name, values...)
 }
 
+func SetCompletionKey(name, key string) {
+	CommandLine.SetCompletionKey(name, key)
+}
+
 func SetCompletion(name string, fn CompletionFunc) {
 	CommandLine.SetCompletion(name, fn)
+}
+
+func MarkRepeatable(name string) {
+	CommandLine.MarkRepeatable(name)
 }
 
 func MarkRequired(name string) {
@@ -797,6 +842,10 @@ func SetCategory(name, category string) {
 
 func SetExample(name, example string) {
 	CommandLine.SetExample(name, example)
+}
+
+func SetSurface(name string, surface Surface, override FlagSurface) {
+	CommandLine.SetSurface(name, surface, override)
 }
 
 func (f *FlagSet) IsSet(name string) bool {

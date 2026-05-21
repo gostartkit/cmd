@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 )
 
 type InvocationKind string
@@ -153,11 +152,7 @@ func (r *Resolver) Resolve(ctx context.Context, args []string, opts resolveOptio
 			return r.resolveCommandInvocation(ctx, root, root, args, nil, invocation)
 		}
 
-		suggestions := suggestCommand(name, root.SubCommands)
-		if len(suggestions) > 0 {
-			return nil, a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or ")), ErrorKindNotFound, 2)
-		}
-		return nil, a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name), ErrorKindNotFound, 2)
+		return nil, a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, %v", ErrNotFound, UnknownCommandError(name, root.SubCommands)), ErrorKindNotFound, 2)
 	}
 
 	invocation.CommandPath = path

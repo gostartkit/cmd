@@ -561,6 +561,8 @@ func cloneFlagSetDefinition(src *FlagSet, name string, output io.Writer) *FlagSe
 // Command struct
 type Command struct {
 	Name        string
+	ID          string
+	HandlerID   string
 	Aliases     []string
 	UsageLine   string
 	Short       string
@@ -581,6 +583,7 @@ type Command struct {
 	// that need full isolation should store immutable values or clone payloads
 	// themselves before attaching them here.
 	Extensions  map[string]any
+	Surfaces    map[Surface]CommandSurface
 	Run         func(ctx context.Context, cmd *Command, args []string) error
 	SetFlags    func(f *FlagSet)
 	SubCommands Commands

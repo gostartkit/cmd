@@ -28,22 +28,27 @@ const (
 )
 
 type flagDef struct {
-	Name       string
-	Shorthand  string
-	Usage      string
-	DefValue   string
-	Category   string
-	EnvVars    []string
-	ConfigKeys []string
-	Enum       []string
-	Required   bool
-	Hidden     bool
-	Deprecated string
-	Example    string
-	Completion CompletionFunc
-	Extensions map[string]any
-	NewValue   flagValueFactory
-	ValueKind  flagValueKind
+	Name          string
+	Shorthand     string
+	Usage         string
+	DefValue      string
+	ID            string
+	Kind          string
+	Category      string
+	EnvVars       []string
+	ConfigKeys    []string
+	Enum          []string
+	Required      bool
+	Repeatable    bool
+	Hidden        bool
+	Deprecated    string
+	Example       string
+	CompletionKey string
+	Completion    CompletionFunc
+	Extensions    map[string]any
+	Surfaces      map[Surface]FlagSurface
+	NewValue      flagValueFactory
+	ValueKind     flagValueKind
 }
 
 type flagSetDef struct {
@@ -139,24 +144,29 @@ func instantiateFlagSetFromDef(def *flagSetDef, name string, output io.Writer) *
 
 func instantiateFlagView(def *flagDef, runtime *flagRuntime, index int) *Flag {
 	flag := &Flag{
-		Name:       def.Name,
-		Shorthand:  def.Shorthand,
-		Usage:      def.Usage,
-		Value:      runtime.value,
-		DefValue:   def.DefValue,
-		Category:   def.Category,
-		EnvVars:    append([]string(nil), def.EnvVars...),
-		ConfigKeys: append([]string(nil), def.ConfigKeys...),
-		Enum:       append([]string(nil), def.Enum...),
-		Required:   def.Required,
-		Hidden:     def.Hidden,
-		Deprecated: def.Deprecated,
-		Example:    def.Example,
-		Completion: def.Completion,
-		Extensions: cloneExtensions(def.Extensions),
-		index:      index,
-		def:        def,
-		rt:         runtime,
+		Name:          def.Name,
+		Shorthand:     def.Shorthand,
+		Usage:         def.Usage,
+		Value:         runtime.value,
+		DefValue:      def.DefValue,
+		ID:            def.ID,
+		Kind:          def.Kind,
+		Category:      def.Category,
+		EnvVars:       append([]string(nil), def.EnvVars...),
+		ConfigKeys:    append([]string(nil), def.ConfigKeys...),
+		Enum:          append([]string(nil), def.Enum...),
+		Required:      def.Required,
+		Repeatable:    def.Repeatable,
+		Hidden:        def.Hidden,
+		Deprecated:    def.Deprecated,
+		Example:       def.Example,
+		CompletionKey: def.CompletionKey,
+		Completion:    def.Completion,
+		Extensions:    cloneExtensions(def.Extensions),
+		Surfaces:      cloneFlagSurfaces(def.Surfaces),
+		index:         index,
+		def:           def,
+		rt:            runtime,
 	}
 	return flag
 }
@@ -169,41 +179,51 @@ func newFlagDefFromFlag(flag *Flag) (*flagDef, bool) {
 	factory, kind, ok := deriveFlagValueFactory(flag)
 	if !ok {
 		return &flagDef{
-			Name:       flag.Name,
-			Shorthand:  flag.Shorthand,
-			Usage:      flag.Usage,
-			DefValue:   flag.DefValue,
-			Category:   flag.Category,
-			EnvVars:    append([]string(nil), flag.EnvVars...),
-			ConfigKeys: append([]string(nil), flag.ConfigKeys...),
-			Enum:       append([]string(nil), flag.Enum...),
-			Required:   flag.Required,
-			Hidden:     flag.Hidden,
-			Deprecated: flag.Deprecated,
-			Example:    flag.Example,
-			Completion: flag.Completion,
-			Extensions: cloneExtensions(flag.Extensions),
-			ValueKind:  flagValueKindUnknown,
+			Name:          flag.Name,
+			Shorthand:     flag.Shorthand,
+			Usage:         flag.Usage,
+			DefValue:      flag.DefValue,
+			ID:            flag.ID,
+			Kind:          flag.Kind,
+			Category:      flag.Category,
+			EnvVars:       append([]string(nil), flag.EnvVars...),
+			ConfigKeys:    append([]string(nil), flag.ConfigKeys...),
+			Enum:          append([]string(nil), flag.Enum...),
+			Required:      flag.Required,
+			Repeatable:    flag.Repeatable,
+			Hidden:        flag.Hidden,
+			Deprecated:    flag.Deprecated,
+			Example:       flag.Example,
+			CompletionKey: flag.CompletionKey,
+			Completion:    flag.Completion,
+			Extensions:    cloneExtensions(flag.Extensions),
+			Surfaces:      cloneFlagSurfaces(flag.Surfaces),
+			ValueKind:     flagValueKindUnknown,
 		}, false
 	}
 
 	return &flagDef{
-		Name:       flag.Name,
-		Shorthand:  flag.Shorthand,
-		Usage:      flag.Usage,
-		DefValue:   flag.DefValue,
-		Category:   flag.Category,
-		EnvVars:    append([]string(nil), flag.EnvVars...),
-		ConfigKeys: append([]string(nil), flag.ConfigKeys...),
-		Enum:       append([]string(nil), flag.Enum...),
-		Required:   flag.Required,
-		Hidden:     flag.Hidden,
-		Deprecated: flag.Deprecated,
-		Example:    flag.Example,
-		Completion: flag.Completion,
-		Extensions: cloneExtensions(flag.Extensions),
-		NewValue:   factory,
-		ValueKind:  kind,
+		Name:          flag.Name,
+		Shorthand:     flag.Shorthand,
+		Usage:         flag.Usage,
+		DefValue:      flag.DefValue,
+		ID:            flag.ID,
+		Kind:          flag.Kind,
+		Category:      flag.Category,
+		EnvVars:       append([]string(nil), flag.EnvVars...),
+		ConfigKeys:    append([]string(nil), flag.ConfigKeys...),
+		Enum:          append([]string(nil), flag.Enum...),
+		Required:      flag.Required,
+		Repeatable:    flag.Repeatable,
+		Hidden:        flag.Hidden,
+		Deprecated:    flag.Deprecated,
+		Example:       flag.Example,
+		CompletionKey: flag.CompletionKey,
+		Completion:    flag.Completion,
+		Extensions:    cloneExtensions(flag.Extensions),
+		Surfaces:      cloneFlagSurfaces(flag.Surfaces),
+		NewValue:      factory,
+		ValueKind:     kind,
 	}, true
 }
 

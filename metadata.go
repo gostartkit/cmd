@@ -20,6 +20,16 @@ func (c *Command) SetExtension(key string, value any) {
 	c.Extensions[key] = value
 }
 
+func (c *Command) SetSurface(surface Surface, override CommandSurface) {
+	if c == nil {
+		return
+	}
+	if c.Surfaces == nil {
+		c.Surfaces = make(map[Surface]CommandSurface)
+	}
+	c.Surfaces[surface] = cloneCommandSurface(override)
+}
+
 func (p *PositionalArg) SetExtension(key string, value any) {
 	if p == nil {
 		return
@@ -28,6 +38,16 @@ func (p *PositionalArg) SetExtension(key string, value any) {
 		p.Extensions = make(map[string]any)
 	}
 	p.Extensions[key] = value
+}
+
+func (p *PositionalArg) SetSurface(surface Surface, override PositionalSurface) {
+	if p == nil {
+		return
+	}
+	if p.Surfaces == nil {
+		p.Surfaces = make(map[Surface]PositionalSurface)
+	}
+	p.Surfaces[surface] = clonePositionalSurface(override)
 }
 
 func (f *FlagSet) SetExtension(name, key string, value any) error {
