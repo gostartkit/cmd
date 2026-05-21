@@ -30,17 +30,16 @@ func (a *App) RunLine(ctx context.Context, line string) error {
 		return nil
 	}
 
-	a.resetRuntimeState()
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return nil
 	}
 
-	args, err := SplitLine(line)
+	args, err := LexLine(line)
 	if err != nil {
 		return err
 	}
-	return a.Run(ctx, args)
+	return a.runArgs(ctx, args, true)
 }
 
 func (a *App) CompleteLine(line string, cursor int) []string {
@@ -55,7 +54,7 @@ func (a *App) CompleteLine(line string, cursor int) []string {
 		cursor = len(line)
 	}
 
-	args, current, _ := SplitLineForCompletion(line[:cursor])
+	args, current, _ := LexLineForCompletion(line[:cursor])
 	return a.complete(append(args, current))
 }
 
@@ -71,7 +70,7 @@ func (a *App) CompleteLineDetailed(line string, cursor int) []CompletionResult {
 		cursor = len(line)
 	}
 
-	args, current, _ := SplitLineForCompletion(line[:cursor])
+	args, current, _ := LexLineForCompletion(line[:cursor])
 	return a.completeDetailed(append(args, current))
 }
 

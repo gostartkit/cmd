@@ -39,37 +39,6 @@ type completionState struct {
 	positional    []string
 }
 
-func (a *App) runBuiltinCommand(args []string) (bool, error) {
-	if len(args) == 0 {
-		return false, nil
-	}
-
-	switch args[0] {
-	case "completion":
-		if a.searchTopLevelCommand("completion") != nil {
-			return false, nil
-		}
-		return true, a.runCompletion(args[1:])
-	case "spec":
-		if a.searchTopLevelCommand("spec") != nil {
-			return false, nil
-		}
-		return true, a.runSpec(args[1:])
-	case "docs":
-		if a.searchTopLevelCommand("docs") != nil {
-			return false, nil
-		}
-		return true, a.runDocs(args[1:])
-	case "__complete":
-		if a.searchTopLevelCommand("__complete") != nil {
-			return false, nil
-		}
-		return true, a.runComplete(args[1:])
-	default:
-		return false, nil
-	}
-}
-
 func (a *App) runCompletion(args []string) error {
 	out := a.Out
 	if out == nil {
@@ -300,76 +269,7 @@ func (a *App) completeDetailed(args []string) []CompletionResult {
 }
 
 func (a *App) resolveCompletionState(args []string) completionState {
-	root := a.rootCommand()
-	rootBuiltins := a.builtinSpecsForCommands(root.SubCommands)
-	current := ""
-	completed := args
-	if len(args) > 0 {
-		current = args[len(args)-1]
-		completed = args[:len(args)-1]
-	}
-
-	rootFlags := a.newRootFlagSetFor(root, io.Discard)
-	currentFlags := rootFlags
-	currentCommands := root.SubCommands
-	var currentCommand *Command
-	var currentOwner *Command
-	var expectingValue *Flag
-	afterDoubleDash := false
-	positionalArgs := make([]string, 0)
-
-	for _, token := range completed {
-		if expectingValue != nil {
-			expectingValue = nil
-			continue
-		}
-		if afterDoubleDash {
-			positionalArgs = append(positionalArgs, token)
-			continue
-		}
-		if token == "--" {
-			afterDoubleDash = true
-			continue
-		}
-		if isFlagToken(token) {
-			if flag, consumed, needsValue, _, _ := parseCompletionFlag(currentFlags, token); consumed {
-				if needsValue {
-					expectingValue = flag
-				}
-				continue
-			}
-		}
-
-		var cmd *Command
-		if currentOwner != nil {
-			cmd = currentOwner.searchSubCommand(token)
-		} else {
-			if len(currentCommands) < indexedCommandLookupThreshold {
-				cmd = currentCommands.Search(token)
-			} else {
-				cmd = a.searchTopLevelCommand(token)
-			}
-		}
-		if cmd == nil {
-			positionalArgs = append(positionalArgs, token)
-			continue
-		}
-		currentCommand = cmd
-		currentOwner = cmd
-		currentFlags = a.newCommandFlagSetFor(root, rootFlags, cmd, io.Discard)
-		currentCommands = cmd.SubCommands
-	}
-
-	return completionState{
-		root:          root,
-		rootBuiltins:  rootBuiltins,
-		current:       current,
-		currentFlags:  currentFlags,
-		currentCmds:   currentCommands,
-		currentCmd:    currentCommand,
-		expectingFlag: expectingValue,
-		positional:    positionalArgs,
-	}
+	return a.newResolver().ResolveCompletion(args)
 }
 
 func (a *App) completeBuiltinDetailed(args []string, current string) ([]CompletionResult, bool) {

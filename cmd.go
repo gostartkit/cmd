@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"time"
 	"unicode"
 	"unicode/utf8"
 	"unsafe"
@@ -900,195 +899,10 @@ func (a *App) shouldRunRoot(root *Command, remainingArgs []string) bool {
 	return len(root.Positionals) > 0
 }
 
-func (a *App) searchTopLevelCommand(name string) *Command {
-	commands := a.rootSubCommands()
-	if len(commands) < indexedCommandLookupThreshold {
-		return (&commands).Search(name)
-	}
-	sig := makeCommandsCacheSig(a.Root, a.rootSubCommandsSource(), a.Commands)
-
-	a.cacheMu.Lock()
-	if sig != a.cachedRootSubCommandsSig || !a.cachedRootCommandIndexOK {
-		a.cachedRootCommandIndex = buildCommandLookup(commands)
-		a.cachedRootCommandIndexOK = true
-		a.cachedRootSubCommandsSig = sig
-	}
-	index := a.cachedRootCommandIndex
-	a.cacheMu.Unlock()
-
-	return index[name]
-}
-
 // Run executes the application
 func (a *App) Run(ctx context.Context, args []string) error {
 	log.SetFlags(0)
-	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
-		a.Usage()
-		return nil
-	}
-
-	a.flag = nil
-	a.configData = nil
-	a.exitStatus = 0
-	root := a.rootCommand()
-	a.currentRoot = root
-	defer func() {
-		a.currentRoot = nil
-	}()
-	if a.SetFlags != nil || a.configEnabled() || (root != nil && root.SetFlags != nil) {
-		a.flag = a.newRootFlagSetFor(root, a.Err)
-		a.flag.Usage = a.Usage
-	}
-
-	parsedAppFlags := []parsedFlagValue{}
-	remainingArgs := args
-	if a.flag != nil {
-		if err := a.flag.ApplyEnv(); err != nil {
-			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
-		}
-		var err error
-		remainingArgs, parsedAppFlags, err = a.parseAppFlags(args)
-		if err != nil {
-			if errors.Is(err, ErrHelp) {
-				return nil
-			}
-			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
-		}
-		if err := a.loadConfigData(); err != nil {
-			return a.fail(nil, ctx, nil, nil, err, ErrorKindInvalidArguments, 2)
-		}
-	}
-
-	if len(remainingArgs) == 0 {
-		if a.shouldRunRoot(root, remainingArgs) {
-			return a.runCommand(ctx, root, root, args, nil)
-		}
-		a.Usage()
-		a.setExitStatus(2)
-		return nil
-	}
-
-	if remainingArgs[0] == "help" {
-		return a.help(remainingArgs[1:])
-	}
-
-	if handled, err := a.runBuiltinCommand(remainingArgs); handled {
-		if err != nil {
-			return a.fail(nil, ctx, remainingArgs, nil, err, ErrorKindInvalidArguments, 2)
-		}
-		return nil
-	}
-
-	name := remainingArgs[0]
-	cmd, remainingArgs, err := findCommand(a, nil, root.SubCommands, remainingArgs)
-
-	if err != nil {
-		if a.shouldRunRoot(root, remainingArgs) {
-			return a.runCommand(ctx, root, root, args, nil)
-		}
-
-		suggestions := suggestCommand(name, root.SubCommands)
-		if len(suggestions) > 0 {
-			return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q. Did you mean %s?", ErrNotFound, name, strings.Join(suggestions, " or ")), ErrorKindNotFound, 2)
-		}
-		return a.fail(nil, ctx, nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name), ErrorKindNotFound, 2)
-	}
-
-	return a.runCommand(ctx, root, cmd, remainingArgs, parsedAppFlags)
-}
-
-func (a *App) runCommand(ctx context.Context, root *Command, cmd *Command, args []string, inheritedFlags []parsedFlagValue) error {
-	cmd.app = a
-	startTime := time.Now()
-
-	cmd.flag = a.newCommandFlagSetFor(root, a.flag, cmd, a.Err)
-	cmd.flag.Usage = func() {
-		if cmd.Name == a.Name {
-			a.Usage()
-			return
-		}
-		cmd.Usage()
-	}
-
-	if err := cmd.flag.ApplyConfig(a.configData); err != nil {
-		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
-	}
-
-	if err := cmd.flag.ApplyEnv(); err != nil {
-		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
-	}
-
-	for _, parsedFlag := range inheritedFlags {
-		if err := cmd.flag.Set(parsedFlag.Name, parsedFlag.Value); err != nil {
-			return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
-		}
-	}
-
-	if err := cmd.flag.Parse(args); err != nil {
-		if errors.Is(err, ErrHelp) {
-			return nil
-		}
-		return a.fail(cmd, ctx, args, &startTime, err, ErrorKindInvalidArguments, 2)
-	}
-
-	if err := cmd.flag.Validate(); err != nil {
-		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindInvalidArguments, 2)
-	}
-
-	if err := cmd.validatePositionals(cmd.flag.Args()); err != nil {
-		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindInvalidArguments, 2)
-	}
-
-	if !cmd.Runnable() {
-		cmd.flag.Usage()
-		a.setExitStatus(2)
-		return nil
-	}
-
-	cmd.flag.WarnDeprecated()
-	if cmd.Deprecated != "" {
-		fmt.Fprintf(a.Err, "Warning: command %q is deprecated: %s\n", cmd.Name, cmd.Deprecated)
-	}
-
-	commandArgs := cmd.flag.Args()
-	a.emitEvent(Event{
-		Type:      EventCommandStarted,
-		Command:   cmd,
-		Args:      commandArgs,
-		StartTime: startTime,
-	})
-
-	if err := a.runBeforeHooks(ctx, cmd, cmd.flag.Args(), startTime); err != nil {
-		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindRuntime, 1)
-	}
-
-	middlewareCtx := MiddlewareContext{
-		Context:   ctx,
-		App:       a,
-		Command:   cmd,
-		Args:      commandArgs,
-		StartTime: startTime,
-	}
-	runFn := func(runCtx context.Context) error {
-		return cmd.Run(runCtx, cmd, commandArgs)
-	}
-	middlewares := joinMiddlewares(a.Middlewares, cmd.Middlewares)
-
-	if err := chainMiddlewares(middlewareCtx, runFn, middlewares); err != nil {
-		return a.fail(cmd, ctx, cmd.flag.Args(), &startTime, err, ErrorKindRuntime, 1)
-	}
-
-	a.runAfterHooks(ctx, cmd, cmd.flag.Args(), startTime, nil)
-	a.emitEvent(Event{
-		Type:      EventCommandFinished,
-		Command:   cmd,
-		Args:      commandArgs,
-		StartTime: startTime,
-		EndTime:   time.Now(),
-		Duration:  time.Since(startTime),
-		ExitCode:  a.ExitStatus(),
-	})
-	return nil
+	return a.runArgs(ctx, args, false)
 }
 
 func joinMiddlewares(appMiddlewares []Middleware, commandMiddlewares []Middleware) []Middleware {
@@ -1255,21 +1069,7 @@ func (a *App) Usage() {
 }
 
 func (a *App) help(args []string) error {
-	if len(args) == 0 {
-		a.Usage()
-		return nil
-	}
-
-	root := a.rootCommand()
-	cmd, _, err := findCommand(a, nil, root.SubCommands, args)
-	if err != nil {
-		return err
-	}
-	cmd.app = a
-	rootFlags := a.newRootFlagSetFor(root, a.Err)
-	cmd.flag = a.newCommandFlagSetFor(root, rootFlags, cmd, a.Err)
-	cmd.Usage()
-	return nil
+	return a.runHelpCommand(args)
 }
 
 type parsedFlagValue struct {
@@ -1346,50 +1146,6 @@ func (a *App) parseAppFlags(args []string) ([]string, []parsedFlagValue, error) 
 	}
 
 	return nil, parsed, nil
-}
-
-// findCommand recursively finds a command or subcommand
-func findCommand(app *App, parent *Command, cmds Commands, args []string) (*Command, []string, error) {
-
-	if len(args) == 0 {
-		return nil, nil, fmt.Errorf("%w, no command provided", ErrNotFound)
-	}
-
-	name := args[0]
-
-	var cmd *Command
-	switch {
-	case parent != nil:
-		cmd = parent.searchSubCommand(name)
-	case app != nil:
-		if len(cmds) < indexedCommandLookupThreshold {
-			cmd = cmds.Search(name)
-		} else {
-			cmd = app.searchTopLevelCommand(name)
-		}
-	default:
-		cmd = cmds.Search(name)
-	}
-
-	if cmd == nil {
-		return nil, nil, fmt.Errorf("%w, unknown command %q", ErrNotFound, name)
-	}
-
-	cmd.alias = name
-
-	if len(args) > 1 && len(cmd.SubCommands) > 0 {
-
-		subCmd, remainingArgs, err := findCommand(nil, cmd, cmd.SubCommands, args[1:])
-
-		if err == nil {
-			return subCmd, remainingArgs, nil
-		}
-		if !cmd.Runnable() {
-			return nil, nil, err
-		}
-	}
-
-	return cmd, args[1:], nil
 }
 
 type errWriter struct {
