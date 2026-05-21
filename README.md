@@ -680,6 +680,8 @@ app spec json
 Current output includes:
 
 - `schema_version`
+- `surface`
+- `available_surfaces`
 - `builtins`
 - `capabilities`
 - `config`
@@ -687,15 +689,33 @@ Current output includes:
 - Middleware and observer markers
 - Global flags
 - The command tree
+- Stable command IDs and handler IDs
 - Positionals
 - Flags
 - `extensions`
 
-### Important fields in `FlagSpec` and `PositionalSpec`
+### Surface-aware export
 
+`Spec()` keeps the default/base contract. If you need a REPL/runtime-facing contract from the same command tree, export a specific surface:
+
+```go
+cliSpec := app.Spec()
+replSpec := app.SpecFor(cmd.SurfaceREPL)
+```
+
+This is useful when CLI and REPL differ in usage lines or positional requirements, but still share the same base command definition.
+
+### Important fields in `CommandSpec`, `FlagSpec`, and `PositionalSpec`
+
+- `id`
+- `handler_id`
+- `path`
+- `kind`
 - `enum`
 - `required`
+- `repeatable`
 - `deprecated`
+- `completion_key`
 - `supports_completion`
 - `source_order`
 - `extensions`
@@ -712,18 +732,22 @@ Example fields:
 {
   "schema_version": "v2",
   "name": "app",
+  "surface": "repl",
   "builtins": ["help", "completion", "spec", "docs"],
   "capabilities": {
+    "completion_keys": true,
     "docs_export": true,
     "middleware": true,
-    "observers": true
+    "observers": true,
+    "surface_overrides": true,
+    "stable_ids": true
   }
 }
 ```
 
 ## Docs Generation
 
-`docs` is generated from `Spec()`, so it shares the same command contract used by `spec`, completion, and help output.
+`docs` is generated from `Spec()`, so it shares the default command contract used by `spec`, completion, and help output. If you need a REPL/runtime-specific schema, export it separately with `SpecFor(surface)`.
 
 ### Single-page output
 
@@ -993,6 +1017,32 @@ cmdDeploy.SetFlags = func(f *cmd.FlagSet) {
 }
 ```
 
+### Surface-level overrides
+
+If one command definition needs different exported shapes for CLI and REPL/runtime schema, keep one base command and attach per-surface overrides:
+
+```go
+requiredFalse := false
+
+cmdCreateUser := &cmd.Command{
+	Name:      "user",
+	UsageLine: "app create user <name> [flags]",
+	Positionals: []cmd.PositionalArg{{
+		Name:          "name",
+		Usage:         "user name",
+		Required:      true,
+		Kind:          "user",
+		CompletionKey: "user",
+		Surfaces: map[cmd.Surface]cmd.PositionalSurface{
+			cmd.SurfaceREPL: {Required: &requiredFalse},
+		},
+	}},
+	Surfaces: map[cmd.Surface]cmd.CommandSurface{
+		cmd.SurfaceREPL: {UsageLine: "app create user [name] [flags]"},
+	},
+}
+```
+
 These metadata fields are exported into:
 
 - `spec`
@@ -1068,6 +1118,8 @@ app docs markdown ./site/docs
 - `(*App).AddObserver(...)`
 - `(*App).SetExtension(key, value)`
 - `(*App).Spec()`
+- `(*App).SpecFor(surface)`
+- `(*App).AvailableSurfaces()`
 
 ### Default instance
 
@@ -1080,19 +1132,35 @@ app docs markdown ./site/docs
 
 - `BindEnv`
 - `BindConfig`
+- `SetID`
+- `SetKind`
 - `SetEnum`
+- `SetCompletionKey`
 - `SetCompletion`
+- `MarkRepeatable`
 - `MarkRequired`
 - `MarkHidden`
 - `MarkDeprecated`
 - `SetCategory`
 - `SetExample`
 - `SetExtension`
+- `SetSurface`
+
+### Shared error and suggestion helpers
+
+- `SuggestCommands`
+- `UnknownCommandError`
+- `UnknownSubcommandError`
+- `UsageError`
 
 ### Important types
 
 - `App`
 - `Command`
+- `Surface`
+- `CommandSurface`
+- `PositionalSurface`
+- `FlagSurface`
 - `FlagSet`
 - `Flag`
 - `PositionalArg`
@@ -1121,5 +1189,6 @@ If you want a CLI that can grow into a platform, organize around this model:
 - `env / config / CLI` as the single source-of-truth for configuration resolution
 - `hooks / middleware / observer` as the runtime extension layer
 - `spec / docs` as the external contract
+- `surface overrides + rich spec metadata` as the bridge to REPL, parser, schema, and agent consumers
 
 That is the direction this library is best suited for today.

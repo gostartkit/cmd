@@ -680,6 +680,8 @@ app spec json
 当前导出包括：
 
 - `schema_version`
+- `surface`
+- `available_surfaces`
 - `builtins`
 - `capabilities`
 - `config`
@@ -687,17 +689,33 @@ app spec json
 - middleware / observer 标记
 - global flags
 - command tree
+- stable command ID / handler ID
 - positionals
 - flags
 - `extensions`
 
-### flag / positional 中的关键信息
+### surface-aware 导出
 
-`FlagSpec` 和 `PositionalSpec` 还会带上：
+`Spec()` 保留默认 / base 契约。如果你需要从同一套命令树导出面向 REPL/runtime 的 schema，可以导出指定 surface：
 
+```go
+cliSpec := app.Spec()
+replSpec := app.SpecFor(cmd.SurfaceREPL)
+```
+
+这适合 CLI 和 REPL 只在 usage line、positionals 必填规则等方面存在差异的场景。
+
+### `CommandSpec` / `FlagSpec` / `PositionalSpec` 中的关键信息
+
+- `id`
+- `handler_id`
+- `path`
+- `kind`
 - `enum`
 - `required`
+- `repeatable`
 - `deprecated`
+- `completion_key`
 - `supports_completion`
 - `source_order`
 - `extensions`
@@ -714,18 +732,22 @@ app spec json > spec.json
 {
   "schema_version": "v2",
   "name": "app",
+  "surface": "repl",
   "builtins": ["help", "completion", "spec", "docs"],
   "capabilities": {
+    "completion_keys": true,
     "docs_export": true,
     "middleware": true,
-    "observers": true
+    "observers": true,
+    "surface_overrides": true,
+    "stable_ids": true
   }
 }
 ```
 
 ## 文档生成 docs
 
-`docs` 基于 `Spec()` 生成文档，因此和 `spec`、completion、帮助输出共享同一份命令模型。
+`docs` 基于 `Spec()` 生成文档，因此和默认 `spec`、completion、帮助输出共享同一份命令模型。如果你需要 REPL/runtime 专用 schema，请额外用 `SpecFor(surface)` 导出。
 
 ### 单页输出
 
@@ -995,6 +1017,32 @@ cmdDeploy.SetFlags = func(f *cmd.FlagSet) {
 }
 ```
 
+### Surface 级 override
+
+如果同一条命令在 CLI 和 REPL/runtime schema 下需要不同导出形态，建议保留一套基础命令定义，再挂 per-surface override：
+
+```go
+requiredFalse := false
+
+cmdCreateUser := &cmd.Command{
+	Name:      "user",
+	UsageLine: "app create user <name> [flags]",
+	Positionals: []cmd.PositionalArg{{
+		Name:          "name",
+		Usage:         "user name",
+		Required:      true,
+		Kind:          "user",
+		CompletionKey: "user",
+		Surfaces: map[cmd.Surface]cmd.PositionalSurface{
+			cmd.SurfaceREPL: {Required: &requiredFalse},
+		},
+	}},
+	Surfaces: map[cmd.Surface]cmd.CommandSurface{
+		cmd.SurfaceREPL: {UsageLine: "app create user [name] [flags]"},
+	},
+}
+```
+
 这些字段会进入：
 
 - `spec`
@@ -1070,6 +1118,8 @@ app docs markdown ./site/docs
 - `(*App).AddObserver(...)`
 - `(*App).SetExtension(key, value)`
 - `(*App).Spec()`
+- `(*App).SpecFor(surface)`
+- `(*App).AvailableSurfaces()`
 
 ### 默认实例
 
@@ -1082,19 +1132,35 @@ app docs markdown ./site/docs
 
 - `BindEnv`
 - `BindConfig`
+- `SetID`
+- `SetKind`
 - `SetEnum`
+- `SetCompletionKey`
 - `SetCompletion`
+- `MarkRepeatable`
 - `MarkRequired`
 - `MarkHidden`
 - `MarkDeprecated`
 - `SetCategory`
 - `SetExample`
 - `SetExtension`
+- `SetSurface`
+
+### 共用错误与建议 helper
+
+- `SuggestCommands`
+- `UnknownCommandError`
+- `UnknownSubcommandError`
+- `UsageError`
 
 ### 相关类型
 
 - `App`
 - `Command`
+- `Surface`
+- `CommandSurface`
+- `PositionalSurface`
+- `FlagSurface`
 - `FlagSet`
 - `Flag`
 - `PositionalArg`
@@ -1125,5 +1191,6 @@ app docs markdown ./site/docs
 - `env / config / CLI` 作为统一配置来源
 - `hooks / middleware / observer` 作为统一运行时扩展点
 - `spec / docs` 作为统一外部契约
+- `surface override + rich spec metadata` 作为连接 REPL、parser、schema、agent consumer 的桥梁
 
 这也是这个库当前最适合的使用方式。
