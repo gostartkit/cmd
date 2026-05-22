@@ -20,12 +20,14 @@ type CLIRuntime struct {
 }
 
 type REPLRuntime struct {
-	In      io.Reader
-	Out     io.Writer
-	Err     io.Writer
-	Prompt  string
-	Welcome string
-	Driver  REPLDriver
+	In         io.Reader
+	Out        io.Writer
+	Err        io.Writer
+	Prompt     string
+	PromptFunc func(ctx context.Context, repl *REPL) string
+	Welcome    string
+	Driver     REPLDriver
+	History    *REPLHistoryHooks
 }
 
 type AutoRuntime struct {
@@ -125,7 +127,7 @@ func (r REPLRuntime) Run(ctx context.Context, app *App) error {
 	if app == nil {
 		return nil
 	}
-	return app.newREPL(r.In, r.Out, r.Err, r.Prompt, r.Welcome, r.Driver).Run(ctx)
+	return app.newREPL(r.In, r.Out, r.Err, r.Prompt, r.PromptFunc, r.Welcome, r.Driver, r.History).Run(ctx)
 }
 
 func (r AutoRuntime) Run(ctx context.Context, app *App) error {

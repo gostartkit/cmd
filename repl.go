@@ -18,21 +18,31 @@ type REPLDriver interface {
 	Run(ctx context.Context, repl *REPL) error
 }
 
+type REPLHistoryHooks struct {
+	Load   func(ctx context.Context) ([]string, error)
+	Append func(ctx context.Context, line string) error
+}
+
 type REPLConfig struct {
-	Enabled bool
-	Prompt  string
-	Welcome string
-	Driver  REPLDriver
+	Enabled    bool
+	Prompt     string
+	PromptFunc func(ctx context.Context, repl *REPL) string
+	Welcome    string
+	Driver     REPLDriver
+	History    *REPLHistoryHooks
 }
 
 type REPL struct {
-	App     *App
-	Prompt  string
-	In      io.Reader
-	Out     io.Writer
-	Err     io.Writer
-	Welcome string
-	Driver  REPLDriver
+	App           *App
+	Prompt        string
+	PromptFunc    func(ctx context.Context, repl *REPL) string
+	In            io.Reader
+	Out           io.Writer
+	Err           io.Writer
+	Welcome       string
+	Driver        REPLDriver
+	History       *REPLHistoryHooks
+	loadedHistory []string
 }
 
 type BasicREPLDriver struct{}
@@ -121,7 +131,7 @@ func (a *App) runREPLBuiltin(ctx context.Context, args []string) error {
 	return a.RunWith(ctx, REPLRuntime{In: os.Stdin, Out: os.Stdout, Err: os.Stdout})
 }
 
-func (a *App) newREPL(in io.Reader, out io.Writer, errOut io.Writer, prompt string, welcome string, driver REPLDriver) *REPL {
+func (a *App) newREPL(in io.Reader, out io.Writer, errOut io.Writer, prompt string, promptFunc func(ctx context.Context, repl *REPL) string, welcome string, driver REPLDriver, history *REPLHistoryHooks) *REPL {
 	if a == nil {
 		return nil
 	}
@@ -129,24 +139,32 @@ func (a *App) newREPL(in io.Reader, out io.Writer, errOut io.Writer, prompt stri
 	if prompt == "" {
 		prompt = a.REPL.Prompt
 	}
+	if promptFunc == nil {
+		promptFunc = a.REPL.PromptFunc
+	}
 	if welcome == "" {
 		welcome = a.REPL.Welcome
 	}
 	if driver == nil {
 		driver = a.REPL.Driver
 	}
+	if history == nil {
+		history = a.REPL.History
+	}
 	if errOut == nil && out != nil {
 		errOut = out
 	}
 
 	return &REPL{
-		App:     a,
-		Prompt:  prompt,
-		Welcome: welcome,
-		Driver:  driver,
-		In:      in,
-		Out:     out,
-		Err:     errOut,
+		App:        a,
+		Prompt:     prompt,
+		PromptFunc: promptFunc,
+		Welcome:    welcome,
+		Driver:     driver,
+		History:    history,
+		In:         in,
+		Out:        out,
+		Err:        errOut,
 	}
 }
 
@@ -158,9 +176,6 @@ func (r *REPL) Run(ctx context.Context) error {
 		return errors.New("repl app is nil")
 	}
 
-	if r.Prompt == "" {
-		r.Prompt = "> "
-	}
 	if r.In == nil {
 		r.In = os.Stdin
 	}
@@ -183,11 +198,53 @@ func (r *REPL) Run(ctx context.Context) error {
 		fmt.Fprintln(r.Out, strings.TrimRight(r.Welcome, "\r\n"))
 	}
 
+	if err := r.loadHistory(ctx); err != nil {
+		return err
+	}
+
 	driver := r.Driver
 	if driver == nil {
 		driver = defaultREPLDriver(r)
 	}
 	return driver.Run(ctx, r)
+}
+
+func (r *REPL) prompt(ctx context.Context) string {
+	if r == nil {
+		return "> "
+	}
+	if r.PromptFunc != nil {
+		if prompt := r.PromptFunc(ctx, r); prompt != "" {
+			return prompt
+		}
+	}
+	if r.Prompt != "" {
+		return r.Prompt
+	}
+	return "> "
+}
+
+func (r *REPL) loadHistory(ctx context.Context) error {
+	if r == nil || r.History == nil || r.History.Load == nil {
+		r.loadedHistory = nil
+		return nil
+	}
+	lines, err := r.History.Load(ctx)
+	if err != nil {
+		return fmt.Errorf("repl history load: %w", err)
+	}
+	r.loadedHistory = append([]string(nil), lines...)
+	return nil
+}
+
+func (r *REPL) appendHistory(ctx context.Context, line string) error {
+	if r == nil || r.History == nil || r.History.Append == nil {
+		return nil
+	}
+	if err := r.History.Append(ctx, line); err != nil {
+		return fmt.Errorf("repl history append: %w", err)
+	}
+	return nil
 }
 
 func (d BasicREPLDriver) Run(ctx context.Context, r *REPL) error {
@@ -225,7 +282,7 @@ func (d BasicREPLDriver) Run(ctx context.Context, r *REPL) error {
 			return err
 		}
 
-		fmt.Fprint(r.Out, r.Prompt)
+		fmt.Fprint(r.Out, r.prompt(ctx))
 
 		select {
 		case <-ctx.Done():
@@ -243,6 +300,11 @@ func (d BasicREPLDriver) Run(ctx context.Context, r *REPL) error {
 			}
 
 			line := strings.TrimRight(result.line, "\r\n")
+			if strings.TrimSpace(line) != "" {
+				if err := r.appendHistory(ctx, line); err != nil {
+					fmt.Fprintf(r.Err, "Warning: %v\n", err)
+				}
+			}
 			exit, err := r.handleLine(ctx, line)
 			if exit {
 				return nil

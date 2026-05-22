@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"pkg.gostartkit.com/cmd/internal/terminal"
 	"slices"
 	"strings"
 	"testing"
@@ -650,6 +652,198 @@ func TestREPLBuiltinUsesConfiguredDriver(t *testing.T) {
 	}
 }
 
+func TestREPLPromptFallbacks(t *testing.T) {
+	repl := &REPL{}
+	if got := repl.prompt(context.Background()); got != "> " {
+		t.Fatalf("expected default prompt, got %q", got)
+	}
+
+	repl.Prompt = "static> "
+	if got := repl.prompt(context.Background()); got != "static> " {
+		t.Fatalf("expected static prompt, got %q", got)
+	}
+
+	repl.PromptFunc = func(ctx context.Context, repl *REPL) string {
+		return "dynamic> "
+	}
+	if got := repl.prompt(context.Background()); got != "dynamic> " {
+		t.Fatalf("expected dynamic prompt, got %q", got)
+	}
+
+	repl.PromptFunc = func(ctx context.Context, repl *REPL) string {
+		return ""
+	}
+	if got := repl.prompt(context.Background()); got != "static> " {
+		t.Fatalf("expected prompt fallback to static prompt, got %q", got)
+	}
+
+	repl.Prompt = ""
+	if got := repl.prompt(context.Background()); got != "> " {
+		t.Fatalf("expected prompt fallback to default prompt, got %q", got)
+	}
+}
+
+func TestBasicREPLPromptFuncRunsEachRender(t *testing.T) {
+	app := NewApp("test")
+	var count int
+
+	repl := &REPL{
+		App: app,
+		In:  strings.NewReader("\nexit\n"),
+		Out: &bytes.Buffer{},
+		Err: &bytes.Buffer{},
+		PromptFunc: func(ctx context.Context, repl *REPL) string {
+			count++
+			return fmt.Sprintf("%d> ", count)
+		},
+	}
+	out := repl.Out.(*bytes.Buffer)
+
+	if err := repl.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("expected prompt func to run twice, got %d", count)
+	}
+	if got := out.String(); got != "1> 2> " {
+		t.Fatalf("unexpected prompt output: %q", got)
+	}
+}
+
+func TestREPLHistoryLoadHookRunsBeforeDriver(t *testing.T) {
+	app := NewApp("test")
+	var loaded bool
+	var ran bool
+
+	repl := &REPL{
+		App: app,
+		History: &REPLHistoryHooks{
+			Load: func(ctx context.Context) ([]string, error) {
+				loaded = true
+				return []string{"deploy prod", "deploy staging"}, nil
+			},
+		},
+		Driver: replDriverFunc(func(ctx context.Context, repl *REPL) error {
+			ran = true
+			if !slices.Equal(repl.loadedHistory, []string{"deploy prod", "deploy staging"}) {
+				t.Fatalf("unexpected loaded history: %v", repl.loadedHistory)
+			}
+			return nil
+		}),
+	}
+
+	if err := repl.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !loaded || !ran {
+		t.Fatalf("expected load and driver to run, loaded=%v ran=%v", loaded, ran)
+	}
+}
+
+func TestREPLHistoryLoadHookErrorStopsStartup(t *testing.T) {
+	app := NewApp("test")
+	ran := false
+	repl := &REPL{
+		App: app,
+		History: &REPLHistoryHooks{
+			Load: func(ctx context.Context) ([]string, error) {
+				return nil, errors.New("load failed")
+			},
+		},
+		Driver: replDriverFunc(func(ctx context.Context, repl *REPL) error {
+			ran = true
+			return nil
+		}),
+	}
+
+	err := repl.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "repl history load: load failed") {
+		t.Fatalf("expected wrapped load error, got %v", err)
+	}
+	if ran {
+		t.Fatal("expected driver not to run when history load fails")
+	}
+}
+
+func TestBasicREPLHistoryAppendHookRunsOnAcceptedLines(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{
+			Name: "hello",
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				return nil
+			},
+		},
+	}
+
+	var got []string
+	var out bytes.Buffer
+	repl := &REPL{
+		App: app,
+		In:  strings.NewReader("hello\nexit\n"),
+		Out: &out,
+		Err: &out,
+		History: &REPLHistoryHooks{
+			Append: func(ctx context.Context, line string) error {
+				got = append(got, line)
+				return nil
+			},
+		},
+	}
+
+	if err := repl.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !slices.Equal(got, []string{"hello", "exit"}) {
+		t.Fatalf("unexpected appended history lines: %v", got)
+	}
+}
+
+func TestBasicREPLHistoryAppendHookWarningDoesNotBlockCommand(t *testing.T) {
+	app := NewApp("test")
+	ran := false
+	app.Commands = []*Command{
+		{
+			Name: "hello",
+			Run: func(ctx context.Context, cmd *Command, args []string) error {
+				ran = true
+				fmt.Fprintln(app.Out, "ok")
+				return nil
+			},
+		},
+	}
+
+	var out bytes.Buffer
+	repl := &REPL{
+		App: app,
+		In:  strings.NewReader("hello\nexit\n"),
+		Out: &out,
+		Err: &out,
+		History: &REPLHistoryHooks{
+			Append: func(ctx context.Context, line string) error {
+				if line == "hello" {
+					return errors.New("append failed")
+				}
+				return nil
+			},
+		},
+	}
+
+	if err := repl.Run(context.Background()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ran {
+		t.Fatal("expected command to run even if append hook fails")
+	}
+	output := out.String()
+	if !strings.Contains(output, "Warning: repl history append: append failed") {
+		t.Fatalf("expected append warning, got %q", output)
+	}
+	if !strings.Contains(output, "ok\n") {
+		t.Fatalf("expected command output, got %q", output)
+	}
+}
+
 func TestCompletionReplaceStart(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -959,4 +1153,185 @@ func TestCompletionCycleAdvancesWithinSameContext(t *testing.T) {
 	if got := session.nextCompletionPage("deploy", len([]rune("deploy")), 20); got != 0 {
 		t.Fatalf("expected reset page 0, got %d", got)
 	}
+}
+
+func TestTerminalSessionInitHistoryCopiesLoadedHistory(t *testing.T) {
+	session := &replTerminalSession{
+		repl: &REPL{
+			loadedHistory: []string{"deploy prod", "deploy staging"},
+		},
+	}
+
+	session.initHistory()
+	if !slices.Equal(session.history, []string{"deploy prod", "deploy staging"}) {
+		t.Fatalf("unexpected session history: %v", session.history)
+	}
+
+	session.history[0] = "changed"
+	if session.repl.loadedHistory[0] != "deploy prod" {
+		t.Fatalf("expected loaded history to stay isolated, got %v", session.repl.loadedHistory)
+	}
+}
+
+func TestTerminalSessionSubmitSuspendsAndResumesRawMode(t *testing.T) {
+	withTerminalHooks(t, func(state *terminalHookState) {
+		in := tempFile(t)
+		out := tempFile(t)
+		var session *replTerminalSession
+
+		app := NewApp("test")
+		app.Commands = []*Command{
+			{
+				Name: "run",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					if session.rawState != nil {
+						t.Fatal("expected raw mode to be suspended during command execution")
+					}
+					return nil
+				},
+			},
+		}
+
+		session = &replTerminalSession{
+			repl:   &REPL{App: app, Err: io.Discard},
+			ctx:    context.Background(),
+			in:     in,
+			out:    out,
+			line:   []rune("run"),
+			cursor: len([]rune("run")),
+		}
+
+		if err := session.enterRawMode(); err != nil {
+			t.Fatalf("enter raw mode: %v", err)
+		}
+		if err := session.submit(context.Background()); err != nil {
+			t.Fatalf("submit: %v", err)
+		}
+		if state.enterCount != 2 {
+			t.Fatalf("expected raw mode to enter twice, got %d", state.enterCount)
+		}
+		if state.leaveCount != 1 {
+			t.Fatalf("expected raw mode to leave once, got %d", state.leaveCount)
+		}
+		if session.rawState == nil {
+			t.Fatal("expected raw mode to be restored after command execution")
+		}
+	})
+}
+
+func TestTerminalSessionSubmitResumesRawModeAfterCommandError(t *testing.T) {
+	withTerminalHooks(t, func(state *terminalHookState) {
+		in := tempFile(t)
+		out := tempFile(t)
+		app := NewApp("test")
+		app.Commands = []*Command{
+			{
+				Name: "fail",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					return errors.New("boom")
+				},
+			},
+		}
+
+		var errOut bytes.Buffer
+		session := &replTerminalSession{
+			repl:   &REPL{App: app, Err: &errOut},
+			ctx:    context.Background(),
+			in:     in,
+			out:    out,
+			line:   []rune("fail"),
+			cursor: len([]rune("fail")),
+		}
+
+		if err := session.enterRawMode(); err != nil {
+			t.Fatalf("enter raw mode: %v", err)
+		}
+		if err := session.submit(context.Background()); err != nil {
+			t.Fatalf("submit: %v", err)
+		}
+		if state.enterCount != 2 || state.leaveCount != 1 {
+			t.Fatalf("unexpected raw mode transitions: enters=%d leaves=%d", state.enterCount, state.leaveCount)
+		}
+		if session.rawState == nil {
+			t.Fatal("expected raw mode to be restored after command error")
+		}
+		if !strings.Contains(errOut.String(), "Error: boom") {
+			t.Fatalf("expected command error output, got %q", errOut.String())
+		}
+	})
+}
+
+func TestTerminalSessionSubmitExitLeavesRawModeWithoutLeak(t *testing.T) {
+	withTerminalHooks(t, func(state *terminalHookState) {
+		in := tempFile(t)
+		out := tempFile(t)
+		session := &replTerminalSession{
+			repl:   &REPL{App: NewApp("test"), Err: io.Discard},
+			ctx:    context.Background(),
+			in:     in,
+			out:    out,
+			line:   []rune("exit"),
+			cursor: len([]rune("exit")),
+		}
+
+		if err := session.enterRawMode(); err != nil {
+			t.Fatalf("enter raw mode: %v", err)
+		}
+		err := session.submit(context.Background())
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("expected EOF on exit, got %v", err)
+		}
+		if state.enterCount != 1 {
+			t.Fatalf("expected raw mode to enter once, got %d", state.enterCount)
+		}
+		if state.leaveCount != 1 {
+			t.Fatalf("expected raw mode to leave once, got %d", state.leaveCount)
+		}
+		if session.rawState != nil {
+			t.Fatal("expected raw mode state to be cleared on exit")
+		}
+	})
+}
+
+type terminalHookState struct {
+	enterCount int
+	leaveCount int
+}
+
+func withTerminalHooks(t *testing.T, fn func(state *terminalHookState)) {
+	t.Helper()
+
+	state := &terminalHookState{}
+	oldIsTerminal := terminalIsTerminalFD
+	oldMakeRaw := terminalMakeRawFD
+	oldRestore := terminalRestoreFD
+	defer func() {
+		terminalIsTerminalFD = oldIsTerminal
+		terminalMakeRawFD = oldMakeRaw
+		terminalRestoreFD = oldRestore
+	}()
+
+	terminalIsTerminalFD = func(fd int) bool { return true }
+	terminalMakeRawFD = func(fd int) (*terminal.State, error) {
+		state.enterCount++
+		return &terminal.State{}, nil
+	}
+	terminalRestoreFD = func(fd int, st *terminal.State) error {
+		state.leaveCount++
+		return nil
+	}
+
+	fn(state)
+}
+
+func tempFile(t *testing.T) *os.File {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "repl-terminal-*")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	t.Cleanup(func() {
+		file.Close()
+	})
+	return file
 }

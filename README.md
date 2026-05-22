@@ -859,6 +859,40 @@ repl := &cmd.REPL{
 err := repl.Run(ctx)
 ```
 
+If you need a dynamic prompt, provide `PromptFunc`. It is evaluated before each render:
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.Prompt = "app> "
+	cfg.PromptFunc = func(ctx context.Context, repl *cmd.REPL) string {
+		if repl.App == nil {
+			return ""
+		}
+		return repl.App.Name + "> "
+	}
+})
+```
+
+If `PromptFunc` returns an empty string, REPL falls back to `Prompt`, then to the default prompt `"> "`.
+
+You can also load and persist history through hooks:
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.History = &cmd.REPLHistoryHooks{
+		Load: func(ctx context.Context) ([]string, error) {
+			return []string{"deploy prod", "status"}, nil
+		},
+		Append: func(ctx context.Context, line string) error {
+			fmt.Println("persist history:", line)
+			return nil
+		},
+	}
+})
+```
+
+`Load` runs when REPL starts. `Append` runs when a non-empty line is accepted for execution. In-memory history is still used for the current session, while hooks let you inject persistence.
+
 Built-in REPL commands are:
 
 - `exit`
@@ -868,6 +902,8 @@ Built-in REPL commands are:
 - `.help`
 
 When stdin/stdout is a TTY, the default REPL driver also enables inline editing, history navigation, real-time context-aware hints, inline ghost text for the best completion, and `Tab` completion powered by the same command tree and value completion hooks used by CLI completion. Candidate lists are labeled by kind, so commands, flags, values, and positional arguments stay easy to distinguish, and repeated `Tab` presses page through longer candidate lists.
+
+During line editing, terminal REPL keeps stdin in raw mode. After you press Enter to submit a command, the driver temporarily restores normal terminal mode before executing the command, then re-enters raw mode when REPL resumes. This allows command handlers to read from stdin, ask for confirmation, prompt for passwords, or perform their own terminal interaction without fighting the REPL line editor.
 
 Command errors are printed and the REPL keeps running. `context.Canceled` or input EOF exits the loop.
 

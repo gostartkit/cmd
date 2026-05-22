@@ -15,6 +15,12 @@ import (
 
 type TerminalREPLDriver struct{}
 
+var (
+	terminalIsTerminalFD = terminal.IsTerminalFD
+	terminalMakeRawFD    = terminal.MakeRawFD
+	terminalRestoreFD    = terminal.RestoreFD
+)
+
 const (
 	ansiDim    = "\033[90m"
 	ansiBlue   = "\033[94m"
@@ -28,6 +34,7 @@ const (
 
 type replTerminalSession struct {
 	repl       *REPL
+	ctx        context.Context
 	in         *os.File
 	out        *os.File
 	line       []rune
@@ -35,6 +42,7 @@ type replTerminalSession struct {
 	history    []string
 	historyPos int
 	scratch    []rune
+	rawState   *terminal.State
 
 	completionCycle completionCycleState
 }
@@ -54,7 +62,7 @@ func isTTYREPL(r *REPL) bool {
 	if !okIn || !okOut {
 		return false
 	}
-	return terminal.IsTerminalFD(int(in.Fd())) && terminal.IsTerminalFD(int(out.Fd()))
+	return terminalIsTerminalFD(int(in.Fd())) && terminalIsTerminalFD(int(out.Fd()))
 }
 
 func (d TerminalREPLDriver) Run(ctx context.Context, repl *REPL) error {
@@ -64,20 +72,45 @@ func (d TerminalREPLDriver) Run(ctx context.Context, repl *REPL) error {
 		return BasicREPLDriver{}.Run(ctx, repl)
 	}
 
-	oldState, err := terminal.MakeRawFD(int(in.Fd()))
-	if err != nil {
-		return BasicREPLDriver{}.Run(ctx, repl)
-	}
-	defer terminal.RestoreFD(int(in.Fd()), oldState)
-
 	session := &replTerminalSession{
 		repl:       repl,
+		ctx:        ctx,
 		in:         in,
 		out:        out,
 		historyPos: 0,
 	}
+	session.initHistory()
+	session.historyPos = len(session.history)
+	if err := session.enterRawMode(); err != nil {
+		return BasicREPLDriver{}.Run(ctx, repl)
+	}
+	defer session.leaveRawMode()
 	session.resetLine()
 	return session.loop(ctx)
+}
+
+func (s *replTerminalSession) enterRawMode() error {
+	if s == nil || s.in == nil || s.rawState != nil {
+		return nil
+	}
+	state, err := terminalMakeRawFD(int(s.in.Fd()))
+	if err != nil {
+		return err
+	}
+	s.rawState = state
+	return nil
+}
+
+func (s *replTerminalSession) leaveRawMode() error {
+	if s == nil || s.in == nil || s.rawState == nil {
+		return nil
+	}
+	state := s.rawState
+	s.rawState = nil
+	if err := terminalRestoreFD(int(s.in.Fd()), state); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *replTerminalSession) loop(ctx context.Context) error {
@@ -194,7 +227,14 @@ func (s *replTerminalSession) submit(ctx context.Context) error {
 	fmt.Fprint(s.out, "\r\n")
 	if strings.TrimSpace(line) != "" {
 		s.appendHistory(line)
+		if err := s.repl.appendHistory(ctx, line); err != nil {
+			fmt.Fprintf(s.repl.Err, "Warning: %v\n", err)
+		}
 	}
+	if err := s.leaveRawMode(); err != nil {
+		return err
+	}
+
 	exit, err := s.repl.handleLine(ctx, line)
 	if exit {
 		return io.EOF
@@ -203,6 +243,9 @@ func (s *replTerminalSession) submit(ctx context.Context) error {
 		fmt.Fprintf(s.repl.Err, "Error: %v\n", err)
 	}
 	s.resetLine()
+	if err := s.enterRawMode(); err != nil {
+		return err
+	}
 	return s.render()
 }
 
@@ -364,6 +407,14 @@ func (s *replTerminalSession) appendHistory(line string) {
 	s.scratch = nil
 }
 
+func (s *replTerminalSession) initHistory() {
+	if s == nil || s.repl == nil || len(s.repl.loadedHistory) == 0 {
+		s.history = nil
+		return
+	}
+	s.history = append([]string(nil), s.repl.loadedHistory...)
+}
+
 func (s *replTerminalSession) resetLine() {
 	s.line = s.line[:0]
 	s.cursor = 0
@@ -404,10 +455,11 @@ func (s *replTerminalSession) render() error {
 	line := string(s.line)
 	hint := s.currentHint()
 	ghost := s.currentGhostText()
-	if _, err := fmt.Fprintf(s.out, "\r\033[2K%s%s%s\n\033[2K%s\033[1A\r", s.repl.Prompt, line, ghost, hint); err != nil {
+	prompt := s.repl.prompt(s.ctx)
+	if _, err := fmt.Fprintf(s.out, "\r\033[2K%s%s%s\n\033[2K%s\033[1A\r", prompt, line, ghost, hint); err != nil {
 		return err
 	}
-	cursorCol := len([]rune(s.repl.Prompt)) + s.cursor
+	cursorCol := len([]rune(prompt)) + s.cursor
 	if cursorCol > 0 {
 		if _, err := fmt.Fprintf(s.out, "\033[%dC", cursorCol); err != nil {
 			return err

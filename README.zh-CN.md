@@ -859,6 +859,40 @@ repl := &cmd.REPL{
 err := repl.Run(ctx)
 ```
 
+如果你需要动态 prompt，可以配置 `PromptFunc`。它会在每次渲染前重新计算：
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.Prompt = "app> "
+	cfg.PromptFunc = func(ctx context.Context, repl *cmd.REPL) string {
+		if repl.App == nil {
+			return ""
+		}
+		return repl.App.Name + "> "
+	}
+})
+```
+
+如果 `PromptFunc` 返回空字符串，REPL 会回退到 `Prompt`，再回退到默认 prompt `"> "`。
+
+也可以通过 hooks 加载和持久化历史：
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.History = &cmd.REPLHistoryHooks{
+		Load: func(ctx context.Context) ([]string, error) {
+			return []string{"deploy prod", "status"}, nil
+		},
+		Append: func(ctx context.Context, line string) error {
+			fmt.Println("persist history:", line)
+			return nil
+		},
+	}
+})
+```
+
+`Load` 会在 REPL 启动时调用。`Append` 会在一条非空输入被接受并准备执行时调用。当前会话内的内存历史仍然保留，hooks 则用于接入外部持久化。
+
 REPL 内建命令包括：
 
 - `exit`
@@ -868,6 +902,8 @@ REPL 内建命令包括：
 - `.help`
 
 当 stdin/stdout 连接到 TTY 时，默认 REPL driver 还会启用行内编辑、历史记录导航、实时的 context-aware hint、当前最佳补全的 inline ghost text，以及基于同一套命令树和 value completion hook 的 `Tab` 补全。候选列表也会按 kind 标记，方便区分 command、flag、value 和 positional argument；候选很多时，连续按 `Tab` 可以翻页查看。
+
+在行编辑阶段，terminal REPL 会让 stdin 处于 raw mode。用户按回车提交命令后，driver 会先临时恢复正常终端模式，再执行命令；如果 REPL 继续运行，则在命令执行完成后重新进入 raw mode 并重绘交互界面。这样命令处理函数内部如果需要继续读取 stdin、做确认、读密码、或执行更传统的终端交互，也不会和 REPL 行编辑互相冲突。
 
 单条命令失败时 REPL 会打印错误并继续运行。`context.Canceled` 或输入 EOF 会退出循环。
 
