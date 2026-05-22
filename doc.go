@@ -39,6 +39,12 @@ Runtime helpers are also available so applications can choose explicit CLI or
 REPL entrypoints, or let the library automatically select an appropriate
 runtime for the current invocation.
 
+Internally, both CLI args and REPL lines flow through the same Registry,
+Resolver, and Dispatcher pipeline. That shared pipeline keeps help,
+completion, spec export, docs generation, and command execution aligned on
+the same effective command tree while still isolating runtime flag state for
+each invocation.
+
 See README.md for the full usage guide, including config precedence, completion,
 REPL configuration, runtime helpers, spec export, documentation generation,
 hooks, middleware, observers, and custom extensions.

@@ -22,24 +22,25 @@ This document is organized from quick start to platform-style integration.
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
 3. [CLI + REPL Tutorial](#cli--repl-tutorial)
-4. [Two Usage Modes](#two-usage-modes)
-5. [Command Model](#command-model)
-6. [Flag Model](#flag-model)
-7. [Parsing Rules](#parsing-rules)
-8. [Help and Built-in Commands](#help-and-built-in-commands)
-9. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
-10. [Positional Arguments](#positional-arguments)
-11. [Completion](#completion)
-12. [REPL and Line Execution](#repl-and-line-execution)
-13. [Machine-readable Spec](#machine-readable-spec)
-14. [Docs Generation](#docs-generation)
-15. [Lifecycle Hooks](#lifecycle-hooks)
-16. [Middleware](#middleware)
-17. [Observers and Telemetry](#observers-and-telemetry)
-18. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
-19. [Custom Extension Metadata](#custom-extension-metadata)
-20. [Common Patterns](#common-patterns)
-21. [API Quick Reference](#api-quick-reference)
+4. [Architecture Overview](#architecture-overview)
+5. [Two Usage Modes](#two-usage-modes)
+6. [Command Model](#command-model)
+7. [Flag Model](#flag-model)
+8. [Parsing Rules](#parsing-rules)
+9. [Help and Built-in Commands](#help-and-built-in-commands)
+10. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
+11. [Positional Arguments](#positional-arguments)
+12. [Completion](#completion)
+13. [REPL and Line Execution](#repl-and-line-execution)
+14. [Machine-readable Spec](#machine-readable-spec)
+15. [Docs Generation](#docs-generation)
+16. [Lifecycle Hooks](#lifecycle-hooks)
+17. [Middleware](#middleware)
+18. [Observers and Telemetry](#observers-and-telemetry)
+19. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
+20. [Custom Extension Metadata](#custom-extension-metadata)
+21. [Common Patterns](#common-patterns)
+22. [API Quick Reference](#api-quick-reference)
 
 ## Installation
 
@@ -311,6 +312,48 @@ That usually gives you all of the following at once:
 - REPL smart hints
 - REPL command and argument completion
 - REPL history and inline editing
+
+## Architecture Overview
+
+The public API stays intentionally small, but internally the library follows a clear pipeline. Understanding that pipeline helps when you need to embed the package, override behavior, or generate tooling from the same command tree.
+
+### 1. Effective root and shared command tree
+
+- `App.Root` is optional. If you do not set it, the library synthesizes a root command from `App.Name`, `App.Short`, `App.Long`, and `App.Commands`.
+- If both `App.Root.SubCommands` and `App.Commands` are present, they are merged into one effective root. Names already present on `App.Root.SubCommands` win; duplicate names from `App.Commands` are skipped.
+- Root-visible flags are also merged into one layer. The effective global flag set is built from the config flag (when enabled), `App.SetFlags`, and `App.Root.SetFlags`.
+
+This is why CLI, help, completion, REPL, `spec`, and `docs` all see the same command tree instead of parallel models.
+
+### 2. Registry, resolver, and dispatcher
+
+Execution is split into three focused stages:
+
+- `Registry`: indexes command paths, aliases, and visible built-ins from the effective root.
+- `Resolver`: parses argv or REPL tokens into an `Invocation`, selects the target command, applies config/env/global flags, parses command-local flags, and validates positional arguments.
+- `Dispatcher`: handles the resolved invocation kind (`usage`, `help`, built-in, or command), then runs hooks, middleware, observers, and error normalization.
+
+The built-ins `help`, `completion`, `spec`, and `docs` are registered only when the command tree does not already define those names. `repl` is added only after `app.EnableREPL()`, and it can also be shadowed by a user command.
+
+### 3. Runtime selection
+
+The runtime layer is explicit:
+
+- `CLIRuntime` always runs CLI parsing and dispatch.
+- `REPLRuntime` always starts REPL with the provided streams, prompt overrides, driver, and history hooks.
+- `AutoRuntime` prefers CLI whenever args are present. With no args, it enters REPL only if REPL is enabled and stdin/stdout are TTYs; otherwise it falls back to CLI usage/root execution.
+
+That behavior is what makes `cmd.Main(app)` safe for both interactive terminals and non-interactive environments such as tests, pipes, or process supervisors.
+
+### 4. State isolation and cached flag definitions
+
+For performance, flag definitions are cached and reused as immutable templates. Each invocation still gets fresh runtime state:
+
+- repeated CLI runs do not leak previous flag values
+- REPL lines do not inherit mutable state from earlier commands
+- metadata returned by `Lookup`, `Spec()`, docs generation, and completion stays isolated from accidental mutation at runtime
+
+In practice, one command model drives human-facing help, shell completion, REPL hints, and machine-facing exports without requiring separate synchronization code.
 
 ## Two Usage Modes
 
@@ -590,6 +633,8 @@ Built-ins:
 - `docs`
 
 If you define a user command with the same name, the user command wins and the built-in is skipped.
+
+If you call `app.EnableREPL()`, the registry also exposes a built-in `repl` entry unless your own command tree already defines `repl`.
 
 ### Custom Usage Template
 

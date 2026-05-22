@@ -22,24 +22,25 @@
 1. [安装](#安装)
 2. [快速开始](#快速开始)
 3. [CLI + REPL 教程](#cli--repl-教程)
-4. [两种使用模式](#两种使用模式)
-5. [命令模型](#命令模型)
-6. [参数模型](#参数模型)
-7. [解析规则](#解析规则)
-8. [帮助与内建命令](#帮助与内建命令)
-9. [配置、环境变量与优先级](#配置环境变量与优先级)
-10. [位置参数](#位置参数)
-11. [completion](#completion)
-12. [REPL 与行执行](#repl-与行执行)
-13. [机器可读 spec](#机器可读-spec)
-14. [文档生成 docs](#文档生成-docs)
-15. [生命周期 hooks](#生命周期-hooks)
-16. [middleware](#middleware)
-17. [observer 与 telemetry](#observer-与-telemetry)
-18. [统一错误与退出码](#统一错误与退出码)
-19. [自定义扩展 metadata](#自定义扩展-metadata)
-20. [常见模式](#常见模式)
-21. [API 速查](#api-速查)
+4. [架构总览](#架构总览)
+5. [两种使用模式](#两种使用模式)
+6. [命令模型](#命令模型)
+7. [参数模型](#参数模型)
+8. [解析规则](#解析规则)
+9. [帮助与内建命令](#帮助与内建命令)
+10. [配置、环境变量与优先级](#配置环境变量与优先级)
+11. [位置参数](#位置参数)
+12. [completion](#completion)
+13. [REPL 与行执行](#repl-与行执行)
+14. [机器可读 spec](#机器可读-spec)
+15. [文档生成 docs](#文档生成-docs)
+16. [生命周期 hooks](#生命周期-hooks)
+17. [middleware](#middleware)
+18. [observer 与 telemetry](#observer-与-telemetry)
+19. [统一错误与退出码](#统一错误与退出码)
+20. [自定义扩展 metadata](#自定义扩展-metadata)
+21. [常见模式](#常见模式)
+22. [API 速查](#api-速查)
 
 ## 安装
 
@@ -311,6 +312,48 @@ hint: prod
 - REPL 智能提示
 - REPL 命令 / 参数补全
 - REPL 历史与行内编辑
+
+## 架构总览
+
+这个库对外 API 保持得很小，但内部执行链路是明确分层的。理解这条链路后，你在做嵌入式接入、平台封装或文档/控制台生成时会更容易判断应该挂在哪一层。
+
+### 1. 有效 root 与共享命令树
+
+- `App.Root` 是可选的。如果不设置，库会根据 `App.Name`、`App.Short`、`App.Long` 和 `App.Commands` 合成一个 root command。
+- 如果同时设置了 `App.Root.SubCommands` 和 `App.Commands`，两者会合并成一棵有效命令树。`App.Root.SubCommands` 里已存在的名字优先，`App.Commands` 里的重名项会被跳过。
+- root 可见的全局参数也会合并。最终的全局 flag 集来自配置 flag（启用配置支持时）、`App.SetFlags` 和 `App.Root.SetFlags`。
+
+这也是为什么 CLI、帮助输出、completion、REPL、`spec` 和 `docs` 能共用一棵命令树，而不是维护多份平行模型。
+
+### 2. Registry、Resolver 与 Dispatcher
+
+执行过程被拆成三个职责清晰的阶段：
+
+- `Registry`：从有效 root 建立命令路径、alias 和可见内建命令索引。
+- `Resolver`：把 argv 或 REPL token 解析成 `Invocation`，选择目标命令，应用配置/env/全局 flag，解析命令本地 flag，并校验位置参数。
+- `Dispatcher`：根据解析结果分发 `usage`、`help`、内建命令或普通命令，然后串起 hooks、middleware、observer 和错误归一化。
+
+`help`、`completion`、`spec`、`docs` 这些内建命令只有在命令树里没有同名用户命令时才会注册。`repl` 则只有在 `app.EnableREPL()` 后才会加入，而且同样可以被用户命令覆盖。
+
+### 3. 运行时选择
+
+运行时层是显式建模的：
+
+- `CLIRuntime` 永远走 CLI 解析和分发。
+- `REPLRuntime` 永远启动 REPL，并使用传入的流、prompt override、driver 和 history hook。
+- `AutoRuntime` 在存在参数时优先走 CLI；没有参数时，只有在启用了 REPL 且 stdin/stdout 都是 TTY 的情况下才进入 REPL，否则会回退到普通 CLI 的 usage/root 执行。
+
+这也是 `cmd.Main(app)` 能同时适配交互式终端、测试、管道和进程托管场景的原因。
+
+### 4. 状态隔离与 flag 定义缓存
+
+为了性能，flag 定义会被缓存并复用成不可变模板；但每次调用仍会生成新的运行态：
+
+- 连续 CLI 调用不会泄漏上一次的 flag 值
+- REPL 的多行执行不会继承前一条命令里的可变状态
+- `Lookup`、`Spec()`、文档生成和 completion 暴露出去的 metadata 也不会因为运行时修改而互相污染
+
+实际效果是：一份命令模型就能同时驱动人读帮助、shell completion、REPL hint 和机器可读导出，而不用再维护额外的同步层。
 
 ## 两种使用模式
 
@@ -590,6 +633,8 @@ app hello --help
 - `docs`
 
 如果你自己定义了同名命令，则用户命令优先，内建命令会让位。
+
+如果你调用了 `app.EnableREPL()`，registry 还会额外挂出一个内建 `repl` 入口；但如果你的命令树已经定义了 `repl`，仍然以用户命令为准。
 
 ### 自定义 Usage 模板
 
