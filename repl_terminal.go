@@ -676,26 +676,30 @@ func formatCompletionGhostText(line []rune, cursor int, results []CompletionResu
 func formatCompletionDisplayLine(result CompletionResult) string {
 	tag := completionKindTag(result.Kind)
 	color := completionKindColor(result.Kind)
-	if result.Description == "" {
-		return fmt.Sprintf("%s[%s]%s %s", color, tag, ansiReset, result.Value)
+	prefix := ""
+	if tag != "" {
+		prefix = fmt.Sprintf("%s%s%s ", color, tag, ansiReset)
 	}
-	return fmt.Sprintf("%s[%s]%s %-20s %s", color, tag, ansiReset, result.Value, result.Description)
+	if result.Description == "" {
+		return prefix + result.Value
+	}
+	return prefix + fmt.Sprintf("%-20s %s", result.Value, result.Description)
 }
 
 func completionKindTag(kind string) string {
 	switch kind {
 	case completionKindCommand:
-		return "cmd"
+		return ">"
 	case completionKindFlag:
-		return "flag"
+		return "-"
 	case completionKindValue:
-		return "value"
+		return "="
 	case completionKindPositional:
-		return "arg"
+		return ""
 	case completionKindBuiltin:
-		return "builtin"
+		return "*"
 	default:
-		return "item"
+		return "?"
 	}
 }
 

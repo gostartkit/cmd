@@ -1143,13 +1143,12 @@ func TestTerminalSessionCompleteRendersCompletionListFromLineStart(t *testing.T)
 		t.Fatalf("read temp file: %v", err)
 	}
 
-	argTag := ansiCyan + "[arg]" + ansiReset
 	hint := ansiDim + "hint: __recycle_bin__, greenhn, information_schema (+1 more)" + ansiReset
 	want := "\r\n" +
-		"\r\033[2K" + argTag + " __recycle_bin__\r\n" +
-		"\r\033[2K" + argTag + " greenhn\r\n" +
-		"\r\033[2K" + argTag + " information_schema\r\n" +
-		"\r\033[2K" + argTag + " mysql\r\n" +
+		"\r\033[2K__recycle_bin__\r\n" +
+		"\r\033[2Kgreenhn\r\n" +
+		"\r\033[2Kinformation_schema\r\n" +
+		"\r\033[2Kmysql\r\n" +
 		"\r\033[2Kdbx> use \n\r\033[2K" + hint + "\033[1A\r\033[9C"
 	if got := string(gotBytes); got != want {
 		t.Fatalf("expected %q, got %q", want, got)
@@ -1165,27 +1164,27 @@ func TestFormatCompletionDisplayLine(t *testing.T) {
 		{
 			name:   "command with description",
 			result: CompletionResult{Value: "deploy", Description: "deploy services", Kind: completionKindCommand},
-			want:   ansiBlue + "[cmd]" + ansiReset + " " + fmt.Sprintf("%-20s %s", "deploy", "deploy services"),
+			want:   ansiBlue + ">" + ansiReset + " " + fmt.Sprintf("%-20s %s", "deploy", "deploy services"),
 		},
 		{
 			name:   "flag with description",
 			result: CompletionResult{Value: "--env", Description: "target environment", Kind: completionKindFlag},
-			want:   ansiGreen + "[flag]" + ansiReset + " " + fmt.Sprintf("%-20s %s", "--env", "target environment"),
+			want:   ansiGreen + "-" + ansiReset + " " + fmt.Sprintf("%-20s %s", "--env", "target environment"),
 		},
 		{
 			name:   "value without description",
 			result: CompletionResult{Value: "prod", Kind: completionKindValue},
-			want:   ansiYellow + "[value]" + ansiReset + " prod",
+			want:   ansiYellow + "=" + ansiReset + " prod",
 		},
 		{
 			name:   "positional without description",
 			result: CompletionResult{Value: "dev", Kind: completionKindPositional},
-			want:   ansiCyan + "[arg]" + ansiReset + " dev",
+			want:   "dev",
 		},
 		{
 			name:   "builtin without description",
 			result: CompletionResult{Value: "spec", Kind: completionKindBuiltin},
-			want:   ansiDim + "[builtin]" + ansiReset + " spec",
+			want:   ansiDim + "*" + ansiReset + " spec",
 		},
 	}
 
