@@ -1103,6 +1103,59 @@ func TestTerminalSessionRenderStartsHintAtLineStart(t *testing.T) {
 	}
 }
 
+func TestTerminalSessionCompleteRendersCompletionListFromLineStart(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{
+			Name: "use",
+			Positionals: []PositionalArg{
+				{Name: "db", Enum: []string{"__recycle_bin__", "greenhn", "information_schema", "mysql"}},
+			},
+		},
+	}
+
+	tmp, err := os.CreateTemp(t.TempDir(), "complete-out")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer tmp.Close()
+
+	session := &replTerminalSession{
+		repl: &REPL{
+			App:    app,
+			Prompt: "dbx> ",
+		},
+		ctx:    context.Background(),
+		out:    tmp,
+		line:   []rune("use "),
+		cursor: len([]rune("use ")),
+	}
+
+	if err := session.complete(); err != nil {
+		t.Fatalf("complete failed: %v", err)
+	}
+	if _, err := tmp.Seek(0, 0); err != nil {
+		t.Fatalf("seek temp file: %v", err)
+	}
+
+	gotBytes, err := io.ReadAll(tmp)
+	if err != nil {
+		t.Fatalf("read temp file: %v", err)
+	}
+
+	argTag := ansiCyan + "[arg]" + ansiReset
+	hint := ansiDim + "hint: __recycle_bin__, greenhn, information_schema (+1 more)" + ansiReset
+	want := "\r\n" +
+		"\r\033[2K" + argTag + " __recycle_bin__\r\n" +
+		"\r\033[2K" + argTag + " greenhn\r\n" +
+		"\r\033[2K" + argTag + " information_schema\r\n" +
+		"\r\033[2K" + argTag + " mysql\r\n" +
+		"\r\033[2Kdbx> use \n\r\033[2K" + hint + "\033[1A\r\033[9C"
+	if got := string(gotBytes); got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestFormatCompletionDisplayLine(t *testing.T) {
 	tests := []struct {
 		name   string

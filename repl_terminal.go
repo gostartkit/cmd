@@ -380,10 +380,10 @@ func (s *replTerminalSession) complete() error {
 	page := s.nextCompletionPage(line, s.cursor, len(results))
 	fmt.Fprint(s.out, "\r\n")
 	for _, result := range completionPage(results, page, completionPageSize) {
-		fmt.Fprintln(s.out, formatCompletionDisplayLine(result))
+		fmt.Fprintf(s.out, "\r\033[2K%s\r\n", formatCompletionDisplayLine(result))
 	}
 	if footer := formatCompletionPageFooter(results, page, completionPageSize); footer != "" {
-		fmt.Fprintln(s.out, footer)
+		fmt.Fprintf(s.out, "\r\033[2K%s\r\n", footer)
 	}
 	return s.render()
 }
