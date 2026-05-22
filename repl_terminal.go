@@ -456,6 +456,9 @@ func (s *replTerminalSession) render() error {
 	hint := s.currentHint()
 	ghost := s.currentGhostText()
 	prompt := s.repl.prompt(s.ctx)
+	if hint != "" {
+		hint = ansiDim + hint + ansiReset
+	}
 	if _, err := fmt.Fprintf(s.out, "\r\033[2K%s%s%s\n\r\033[2K%s\033[1A\r", prompt, line, ghost, hint); err != nil {
 		return err
 	}

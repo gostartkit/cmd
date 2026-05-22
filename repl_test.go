@@ -1097,7 +1097,7 @@ func TestTerminalSessionRenderStartsHintAtLineStart(t *testing.T) {
 	}
 
 	got := string(gotBytes)
-	want := "\r\033[2Kcmd> dep" + ansiDim + "loy" + ansiReset + "\n\r\033[2Khint: deploy - deploy services\033[1A\r\033[8C"
+	want := "\r\033[2Kcmd> dep" + ansiDim + "loy" + ansiReset + "\n\r\033[2K" + ansiDim + "hint: deploy - deploy services" + ansiReset + "\033[1A\r\033[8C"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
 	}
