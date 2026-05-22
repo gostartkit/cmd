@@ -21,24 +21,25 @@
 
 1. [安装](#安装)
 2. [快速开始](#快速开始)
-3. [两种使用模式](#两种使用模式)
-4. [命令模型](#命令模型)
-5. [参数模型](#参数模型)
-6. [解析规则](#解析规则)
-7. [帮助与内建命令](#帮助与内建命令)
-8. [配置、环境变量与优先级](#配置环境变量与优先级)
-9. [位置参数](#位置参数)
-10. [completion](#completion)
-11. [REPL 与行执行](#repl-与行执行)
-12. [机器可读 spec](#机器可读-spec)
-13. [文档生成 docs](#文档生成-docs)
-14. [生命周期 hooks](#生命周期-hooks)
-15. [middleware](#middleware)
-16. [observer 与 telemetry](#observer-与-telemetry)
-17. [统一错误与退出码](#统一错误与退出码)
-18. [自定义扩展 metadata](#自定义扩展-metadata)
-19. [常见模式](#常见模式)
-20. [API 速查](#api-速查)
+3. [CLI + REPL 教程](#cli--repl-教程)
+4. [两种使用模式](#两种使用模式)
+5. [命令模型](#命令模型)
+6. [参数模型](#参数模型)
+7. [解析规则](#解析规则)
+8. [帮助与内建命令](#帮助与内建命令)
+9. [配置、环境变量与优先级](#配置环境变量与优先级)
+10. [位置参数](#位置参数)
+11. [completion](#completion)
+12. [REPL 与行执行](#repl-与行执行)
+13. [机器可读 spec](#机器可读-spec)
+14. [文档生成 docs](#文档生成-docs)
+15. [生命周期 hooks](#生命周期-hooks)
+16. [middleware](#middleware)
+17. [observer 与 telemetry](#observer-与-telemetry)
+18. [统一错误与退出码](#统一错误与退出码)
+19. [自定义扩展 metadata](#自定义扩展-metadata)
+20. [常见模式](#常见模式)
+21. [API 速查](#api-速查)
 
 ## 安装
 
@@ -128,6 +129,188 @@ app --verbose hello team --name sam
 APP_NAME=sara app hello user
 app hello team -n tom
 ```
+
+## CLI + REPL 教程
+
+如果你的目标是“定义一次命令树，同时支持普通 CLI 和带智能提示的 REPL”，推荐按下面这个流程接入。
+
+### 1. 定义一份共享命令树
+
+建议使用显式 `App`，这样 CLI、REPL、测试和嵌入式运行时都能复用同一个实例：
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"pkg.gostartkit.com/cmd"
+)
+
+func buildApp() *cmd.App {
+	app := cmd.NewApp("ops")
+	app.Short = "Operations console"
+
+	var verbose bool
+	app.ConfigureFlags(func(f *cmd.FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	})
+
+	app.AddCommands(
+		&cmd.Command{
+			Name:      "deploy",
+			UsageLine: "ops deploy [flags] <env>",
+			Short:     "deploy service",
+			Positionals: []cmd.PositionalArg{
+				{
+					Name:       "env",
+					Required:   true,
+					Enum:       []string{"dev", "staging", "prod"},
+					Completion: func(ctx cmd.CompletionContext) []string { return []string{"dev", "staging", "prod"} },
+				},
+			},
+			SetFlags: func(f *cmd.FlagSet) {
+				var region string
+				f.StringVar(&region, "region", "", "target region", "r")
+				f.SetCompletion("region", func(ctx cmd.CompletionContext) []string {
+					return []string{"cn", "us", "eu"}
+				})
+			},
+			Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+				if verbose {
+					fmt.Printf("[verbose] deploy to %s\n", args[0])
+				}
+				fmt.Printf("deploy %s\n", args[0])
+				return nil
+			},
+		},
+	)
+
+	return app
+}
+```
+
+关键点是：
+
+- 子命令、flag、位置参数只定义一次
+- `Enum`、`SetCompletion(...)`、`PositionalArg.Completion` 这些补全元数据也跟着命令树一起定义
+- CLI 和 REPL 都复用同一套 completion engine
+
+### 2. 开启内建 REPL 入口
+
+如果你希望用户通过 `app repl` 进入交互模式，直接启用内建 REPL：
+
+```go
+app.EnableREPL()
+```
+
+也可以顺手配置 prompt / welcome：
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.Prompt = "ops> "
+	cfg.Welcome = "type .help or press Tab"
+})
+```
+
+### 3. 用统一入口启动
+
+最省样板的主程序写法是：
+
+```go
+func main() {
+	app := buildApp()
+	app.EnableREPL()
+	cmd.Main(app)
+}
+```
+
+这会自动按默认策略选择运行模式：
+
+- `ops deploy prod` 走普通 CLI
+- `ops repl` 进入 REPL
+
+如果你想在代码里显式选择，也可以：
+
+```go
+err := app.RunWith(ctx, cmd.CLIRuntime{Args: []string{"deploy", "prod"}})
+err = app.RunWith(ctx, cmd.REPLRuntime{In: os.Stdin, Out: os.Stdout})
+```
+
+### 4. CLI 下怎么用
+
+命令行为普通 CLI：
+
+```bash
+ops deploy prod
+ops deploy prod --region us
+ops --verbose deploy dev
+```
+
+### 5. REPL 下怎么用
+
+进入 REPL：
+
+```bash
+ops repl
+```
+
+在 TTY 终端里，默认 REPL driver 会自动支持：
+
+- `Tab`：补全命令、flag、位置参数和值
+- 连续按 `Tab`：翻页查看更多候选
+- 输入过程中实时 hint：展示当前上下文的推荐项
+- inline ghost text：灰色显示当前最佳补全后缀
+- `↑ / ↓`：翻历史命令
+- `← / →`：左右移动光标
+- `Backspace / Delete`：删除字符
+
+例如：
+
+```text
+ops> dep
+hint: deploy - deploy service
+
+ops> deploy --r
+hint: --region - target region
+
+ops> deploy p
+hint: prod
+```
+
+### 6. 什么信息会自动带到 REPL
+
+只要这些信息定义在命令树上，REPL 就会自动继承：
+
+- 子命令名和 alias
+- 全局 flag 与命令 flag
+- flag 的 `Usage` 文案
+- 位置参数定义
+- `Enum`
+- `SetCompletion(...)`
+- `PositionalArg.Completion`
+- `Short` 描述
+
+这也是推荐把“补全规则”定义在 `Command` / `FlagSet` / `PositionalArg` 上，而不是单独给 REPL 写一套逻辑的原因。
+
+### 7. 推荐接入方式
+
+对大多数应用，推荐这套最小组合：
+
+1. `buildApp()` 里只维护一份命令树
+2. 用 `Enum` 和 `SetCompletion(...)` 把值补全定义在命令模型上
+3. `app.EnableREPL()`
+4. `cmd.Main(app)`
+
+这样通常就已经能同时拿到：
+
+- 普通 CLI
+- shell completion
+- REPL
+- REPL 智能提示
+- REPL 命令 / 参数补全
+- REPL 历史与行内编辑
 
 ## 两种使用模式
 

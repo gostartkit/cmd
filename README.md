@@ -21,24 +21,25 @@ This document is organized from quick start to platform-style integration.
 
 1. [Installation](#installation)
 2. [Quick Start](#quick-start)
-3. [Two Usage Modes](#two-usage-modes)
-4. [Command Model](#command-model)
-5. [Flag Model](#flag-model)
-6. [Parsing Rules](#parsing-rules)
-7. [Help and Built-in Commands](#help-and-built-in-commands)
-8. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
-9. [Positional Arguments](#positional-arguments)
-10. [Completion](#completion)
-11. [REPL and Line Execution](#repl-and-line-execution)
-12. [Machine-readable Spec](#machine-readable-spec)
-13. [Docs Generation](#docs-generation)
-14. [Lifecycle Hooks](#lifecycle-hooks)
-15. [Middleware](#middleware)
-16. [Observers and Telemetry](#observers-and-telemetry)
-17. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
-18. [Custom Extension Metadata](#custom-extension-metadata)
-19. [Common Patterns](#common-patterns)
-20. [API Quick Reference](#api-quick-reference)
+3. [CLI + REPL Tutorial](#cli--repl-tutorial)
+4. [Two Usage Modes](#two-usage-modes)
+5. [Command Model](#command-model)
+6. [Flag Model](#flag-model)
+7. [Parsing Rules](#parsing-rules)
+8. [Help and Built-in Commands](#help-and-built-in-commands)
+9. [Config, Environment Variables, and Precedence](#config-environment-variables-and-precedence)
+10. [Positional Arguments](#positional-arguments)
+11. [Completion](#completion)
+12. [REPL and Line Execution](#repl-and-line-execution)
+13. [Machine-readable Spec](#machine-readable-spec)
+14. [Docs Generation](#docs-generation)
+15. [Lifecycle Hooks](#lifecycle-hooks)
+16. [Middleware](#middleware)
+17. [Observers and Telemetry](#observers-and-telemetry)
+18. [Unified Errors and Exit Codes](#unified-errors-and-exit-codes)
+19. [Custom Extension Metadata](#custom-extension-metadata)
+20. [Common Patterns](#common-patterns)
+21. [API Quick Reference](#api-quick-reference)
 
 ## Installation
 
@@ -128,6 +129,188 @@ app --verbose hello team --name sam
 APP_NAME=sara app hello user
 app hello team -n tom
 ```
+
+## CLI + REPL Tutorial
+
+If your goal is "define one command tree and support both a regular CLI and a REPL with smart hints and completion", the workflow below is the recommended setup.
+
+### 1. Define one shared command tree
+
+Using an explicit `App` instance keeps CLI, REPL, tests, and embedded runtimes on the same model:
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+
+	"pkg.gostartkit.com/cmd"
+)
+
+func buildApp() *cmd.App {
+	app := cmd.NewApp("ops")
+	app.Short = "Operations console"
+
+	var verbose bool
+	app.ConfigureFlags(func(f *cmd.FlagSet) {
+		f.BoolVar(&verbose, "verbose", false, "verbose output", "v")
+	})
+
+	app.AddCommands(
+		&cmd.Command{
+			Name:      "deploy",
+			UsageLine: "ops deploy [flags] <env>",
+			Short:     "deploy service",
+			Positionals: []cmd.PositionalArg{
+				{
+					Name:       "env",
+					Required:   true,
+					Enum:       []string{"dev", "staging", "prod"},
+					Completion: func(ctx cmd.CompletionContext) []string { return []string{"dev", "staging", "prod"} },
+				},
+			},
+			SetFlags: func(f *cmd.FlagSet) {
+				var region string
+				f.StringVar(&region, "region", "", "target region", "r")
+				f.SetCompletion("region", func(ctx cmd.CompletionContext) []string {
+					return []string{"cn", "us", "eu"}
+				})
+			},
+			Run: func(ctx context.Context, c *cmd.Command, args []string) error {
+				if verbose {
+					fmt.Printf("[verbose] deploy to %s\n", args[0])
+				}
+				fmt.Printf("deploy %s\n", args[0])
+				return nil
+			},
+		},
+	)
+
+	return app
+}
+```
+
+The important part is:
+
+- commands, flags, and positionals are defined once
+- completion metadata such as `Enum`, `SetCompletion(...)`, and `PositionalArg.Completion` lives on the same command tree
+- CLI and REPL both reuse the same completion engine
+
+### 2. Enable the built-in REPL entry
+
+If you want users to enter interactive mode through `app repl`, enable the built-in REPL command:
+
+```go
+app.EnableREPL()
+```
+
+You can also configure the prompt and welcome text:
+
+```go
+app.ConfigureREPL(func(cfg *cmd.REPLConfig) {
+	cfg.Prompt = "ops> "
+	cfg.Welcome = "type .help or press Tab"
+})
+```
+
+### 3. Start through the unified entrypoint
+
+The lowest-boilerplate main function looks like this:
+
+```go
+func main() {
+	app := buildApp()
+	app.EnableREPL()
+	cmd.Main(app)
+}
+```
+
+With that setup:
+
+- `ops deploy prod` runs as a normal CLI
+- `ops repl` enters REPL mode
+
+If you want to choose the runtime explicitly in code, you still can:
+
+```go
+err := app.RunWith(ctx, cmd.CLIRuntime{Args: []string{"deploy", "prod"}})
+err = app.RunWith(ctx, cmd.REPLRuntime{In: os.Stdin, Out: os.Stdout})
+```
+
+### 4. Use it as a CLI
+
+The regular CLI usage stays unchanged:
+
+```bash
+ops deploy prod
+ops deploy prod --region us
+ops --verbose deploy dev
+```
+
+### 5. Use it in REPL mode
+
+Enter REPL mode with:
+
+```bash
+ops repl
+```
+
+In a TTY terminal, the default REPL driver automatically supports:
+
+- `Tab`: complete commands, flags, positionals, and values
+- repeated `Tab`: page through longer candidate lists
+- real-time hints while typing
+- inline ghost text for the current best completion
+- `Up / Down`: command history
+- `Left / Right`: cursor movement
+- `Backspace / Delete`: character editing
+
+For example:
+
+```text
+ops> dep
+hint: deploy - deploy service
+
+ops> deploy --r
+hint: --region - target region
+
+ops> deploy p
+hint: prod
+```
+
+### 6. What automatically carries over into REPL
+
+Anything defined on the command tree is automatically reused by REPL, including:
+
+- command names and aliases
+- global flags and command-local flags
+- flag usage text
+- positional argument schemas
+- `Enum`
+- `SetCompletion(...)`
+- `PositionalArg.Completion`
+- command `Short` descriptions
+
+That is why the recommended pattern is to keep completion rules on `Command`, `FlagSet`, and `PositionalArg`, instead of building a separate REPL-only layer.
+
+### 7. Recommended setup
+
+For most apps, this is the minimal recommended stack:
+
+1. Keep one shared `buildApp()`
+2. Put value completion rules on the command model with `Enum` and `SetCompletion(...)`
+3. Call `app.EnableREPL()`
+4. Start with `cmd.Main(app)`
+
+That usually gives you all of the following at once:
+
+- regular CLI execution
+- shell completion
+- REPL mode
+- REPL smart hints
+- REPL command and argument completion
+- REPL history and inline editing
 
 ## Two Usage Modes
 
