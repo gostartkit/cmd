@@ -6,11 +6,12 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"pkg.gostartkit.com/cmd/internal/terminal"
 	"slices"
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"pkg.gostartkit.com/cmd/internal/terminal"
 )
 
 type TerminalREPLDriver struct{}
@@ -695,7 +696,7 @@ func completionKindTag(kind string) string {
 	case completionKindValue:
 		return "="
 	case completionKindPositional:
-		return ""
+		return " "
 	case completionKindBuiltin:
 		return "*"
 	default:
