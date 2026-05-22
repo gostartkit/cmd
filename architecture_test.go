@@ -124,6 +124,38 @@ func TestRegistryBuiltinsRemainCompatible(t *testing.T) {
 			t.Fatal("expected custom spec command to shadow builtin")
 		}
 	})
+
+	t.Run("repl builtin is opt-in and can be shadowed", func(t *testing.T) {
+		app := NewApp("test")
+		if got := app.registry().VisibleBuiltins(); slices.Contains(got, "repl") {
+			t.Fatalf("expected repl builtin to be disabled by default, got %v", got)
+		}
+
+		app.EnableREPL()
+		if got := app.registry().VisibleBuiltins(); !slices.Contains(got, "repl") {
+			t.Fatalf("expected repl builtin after enable, got %v", got)
+		}
+
+		shadow := NewApp("test")
+		shadow.EnableREPL()
+		var ran bool
+		shadow.Commands = []*Command{
+			{
+				Name: "repl",
+				Run: func(ctx context.Context, cmd *Command, args []string) error {
+					ran = true
+					return nil
+				},
+			},
+		}
+
+		if err := shadow.Run(context.Background(), []string{"repl"}); err != nil {
+			t.Fatalf("shadowed repl command failed: %v", err)
+		}
+		if !ran {
+			t.Fatal("expected custom repl command to shadow builtin")
+		}
+	})
 }
 
 func TestResolverPreservesFlagsPositionalsConfigAndEnv(t *testing.T) {

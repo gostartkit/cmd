@@ -14,16 +14,49 @@ type LineCompleter interface {
 	CompleteLine(line string, cursor int) []string
 }
 
-type REPL struct {
-	App    *App
-	Prompt string
-	In     io.Reader
-	Out    io.Writer
-	Err    io.Writer
+type REPLDriver interface {
+	Run(ctx context.Context, repl *REPL) error
 }
+
+type REPLConfig struct {
+	Enabled bool
+	Prompt  string
+	Welcome string
+	Driver  REPLDriver
+}
+
+type REPL struct {
+	App     *App
+	Prompt  string
+	In      io.Reader
+	Out     io.Writer
+	Err     io.Writer
+	Welcome string
+	Driver  REPLDriver
+}
+
+type BasicREPLDriver struct{}
 
 var _ LineCompleter = (*App)(nil)
 var _ DetailedLineCompleter = (*App)(nil)
+
+func (a *App) EnableREPL() {
+	if a == nil {
+		return
+	}
+	a.REPL.Enabled = true
+}
+
+func (a *App) ConfigureREPL(fn func(cfg *REPLConfig)) {
+	if a == nil || fn == nil {
+		return
+	}
+	fn(&a.REPL)
+}
+
+func (a *App) replEnabled() bool {
+	return a != nil && a.REPL.Enabled
+}
 
 func (a *App) RunLine(ctx context.Context, line string) error {
 	if a == nil {
@@ -78,13 +111,43 @@ func (a *App) RunREPL(ctx context.Context, in io.Reader, out io.Writer) error {
 	if a == nil {
 		return nil
 	}
+	return a.RunWith(ctx, REPLRuntime{In: in, Out: out, Err: out})
+}
 
-	return (&REPL{
-		App: a,
-		In:  in,
-		Out: out,
-		Err: out,
-	}).Run(ctx)
+func (a *App) runREPLBuiltin(ctx context.Context, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: %s repl", a.Name)
+	}
+	return a.RunWith(ctx, REPLRuntime{In: os.Stdin, Out: os.Stdout, Err: os.Stdout})
+}
+
+func (a *App) newREPL(in io.Reader, out io.Writer, errOut io.Writer, prompt string, welcome string, driver REPLDriver) *REPL {
+	if a == nil {
+		return nil
+	}
+
+	if prompt == "" {
+		prompt = a.REPL.Prompt
+	}
+	if welcome == "" {
+		welcome = a.REPL.Welcome
+	}
+	if driver == nil {
+		driver = a.REPL.Driver
+	}
+	if errOut == nil && out != nil {
+		errOut = out
+	}
+
+	return &REPL{
+		App:     a,
+		Prompt:  prompt,
+		Welcome: welcome,
+		Driver:  driver,
+		In:      in,
+		Out:     out,
+		Err:     errOut,
+	}
 }
 
 func (r *REPL) Run(ctx context.Context) error {
@@ -116,6 +179,18 @@ func (r *REPL) Run(ctx context.Context) error {
 		r.App.Err = prevErr
 	}()
 
+	if r.Welcome != "" {
+		fmt.Fprintln(r.Out, strings.TrimRight(r.Welcome, "\r\n"))
+	}
+
+	driver := r.Driver
+	if driver == nil {
+		driver = defaultREPLDriver(r)
+	}
+	return driver.Run(ctx, r)
+}
+
+func (d BasicREPLDriver) Run(ctx context.Context, r *REPL) error {
 	type lineResult struct {
 		line string
 		err  error
@@ -168,29 +243,44 @@ func (r *REPL) Run(ctx context.Context) error {
 			}
 
 			line := strings.TrimRight(result.line, "\r\n")
-			trimmed := strings.TrimSpace(line)
-
-			switch trimmed {
-			case "", "\n":
-				continue
-			case "exit", "quit", ".exit", ".quit":
+			exit, err := r.handleLine(ctx, line)
+			if exit {
 				return nil
-			case ".help":
-				printREPLHelp(r.Out)
-				continue
 			}
-
-			if err := r.App.RunLine(ctx, line); err != nil {
+			if err != nil {
 				fmt.Fprintf(r.Err, "Error: %v\n", err)
 			}
 		}
 	}
 }
 
+func (r *REPL) handleLine(ctx context.Context, line string) (bool, error) {
+	trimmed := strings.TrimSpace(line)
+	switch trimmed {
+	case "", "\n":
+		return false, nil
+	case "exit", "quit", ".exit", ".quit":
+		return true, nil
+	case ".help":
+		printREPLHelp(r.Out)
+		return false, nil
+	}
+
+	return false, r.App.RunLine(ctx, line)
+}
+
+func defaultREPLDriver(r *REPL) REPLDriver {
+	if isTTYREPL(r) {
+		return TerminalREPLDriver{}
+	}
+	return BasicREPLDriver{}
+}
+
 func printREPLHelp(out io.Writer) {
 	fmt.Fprintln(out, "REPL commands:")
 	fmt.Fprintln(out, "  exit, quit, .exit, .quit  exit the REPL")
 	fmt.Fprintln(out, "  .help                     show this help")
+	fmt.Fprintln(out, "  <Tab>                     complete commands, flags, and values")
 }
 
 func (a *App) resetRuntimeState() {

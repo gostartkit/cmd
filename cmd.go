@@ -47,6 +47,7 @@ type App struct {
 	Long          string
 	Root          *Command
 	Commands      Commands
+	REPL          REPLConfig
 	UsageTemplate string
 	Out           io.Writer
 	Err           io.Writer
@@ -715,7 +716,7 @@ func (a *App) Execute(args []string) error {
 	if a == nil {
 		return nil
 	}
-	return a.Run(context.Background(), args)
+	return a.RunWith(context.Background(), CLIRuntime{Args: args})
 }
 
 // SetUsageTemplate set value to usageTemplate
@@ -735,11 +736,7 @@ func AddCommands(cmds ...*Command) {
 
 // Execute func
 func Execute() {
-	if err := DefaultApp.Execute(os.Args[1:]); err != nil {
-		fmt.Fprintf(DefaultApp.Err, "Error: %v\n", err)
-		os.Exit(DefaultApp.ExitStatus())
-	}
-	os.Exit(DefaultApp.ExitStatus())
+	DefaultApp.MustRun(context.Background(), CLIRuntime{Args: os.Args[1:]})
 }
 
 func (a *App) rootCommand() *Command {
@@ -904,6 +901,10 @@ func (a *App) shouldRunRoot(root *Command, remainingArgs []string) bool {
 
 // Run executes the application
 func (a *App) Run(ctx context.Context, args []string) error {
+	return a.runCLI(ctx, args)
+}
+
+func (a *App) runCLI(ctx context.Context, args []string) error {
 	log.SetFlags(0)
 	return a.runArgs(ctx, args, false)
 }

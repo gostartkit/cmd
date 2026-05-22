@@ -635,6 +635,34 @@ err := app.RunLine(ctx, `deploy "hello world" --env prod`)
 err := app.RunREPL(ctx, os.Stdin, os.Stdout)
 ```
 
+如果你希望显式选择 runtime，可以使用统一的 runtime interface：
+
+```go
+err := app.RunWith(ctx, cmd.CLIRuntime{Args: os.Args[1:]})
+err = app.RunWith(ctx, cmd.REPLRuntime{In: os.Stdin, Out: os.Stdout})
+err = app.RunDefault(ctx, os.Args[1:])
+```
+
+对于应用入口，也可以使用更贴近 main 的 helper：
+
+```go
+app.RunAuto(ctx, os.Args[1:])
+app.MustRunDefault(ctx, os.Args[1:])
+cmd.Main(app)
+```
+
+如果你希望同一个二进制直接暴露 REPL 模式，而不是自己额外定义命令，可以开启内建 REPL 入口：
+
+```go
+app.EnableREPL()
+```
+
+之后用户可以这样进入 REPL：
+
+```bash
+app repl
+```
+
 也可以直接配置 REPL runtime：
 
 ```go
@@ -655,6 +683,8 @@ REPL 内建命令包括：
 - `.exit`
 - `.quit`
 - `.help`
+
+当 stdin/stdout 连接到 TTY 时，默认 REPL driver 还会启用行内编辑、历史记录导航、实时的 context-aware hint、当前最佳补全的 inline ghost text，以及基于同一套命令树和 value completion hook 的 `Tab` 补全。候选列表也会按 kind 标记，方便区分 command、flag、value 和 positional argument；候选很多时，连续按 `Tab` 可以翻页查看。
 
 单条命令失败时 REPL 会打印错误并继续运行。`context.Canceled` 或输入 EOF 会退出循环。
 
@@ -1109,10 +1139,22 @@ app docs markdown ./site/docs
 
 - `NewApp(name string) *App`
 - `(*App).Run(ctx, args)`
+- `(*App).RunWith(ctx, runtime)`
+- `(*App).RunAuto(ctx, args)`
+- `(*App).RunDefault(ctx, args)`
 - `(*App).RunLine(ctx, line)`
 - `(*App).RunREPL(ctx, in, out)`
+- `(*App).Main(ctx, runtime)`
+- `(*App).MainAuto(ctx, args)`
+- `(*App).MainDefault(ctx, args)`
+- `(*App).MustRun(ctx, runtime)`
+- `(*App).MustRunAuto(ctx, args)`
+- `(*App).MustRunDefault(ctx, args)`
+- `(*App).DefaultRuntime(args)`
 - `(*App).CompleteLine(line, cursor)`
 - `(*App).CompleteLineDetailed(line, cursor)`
+- `(*App).EnableREPL()`
+- `(*App).ConfigureREPL(fn)`
 - `(*App).EnableConfigSupport()`
 - `(*App).Use(...)`
 - `(*App).AddObserver(...)`
@@ -1127,6 +1169,8 @@ app docs markdown ./site/docs
 - `AddCommands(...)`
 - `SetUsageTemplate(...)`
 - `Execute()`
+- `Main(app)`
+- `MainWithContext(ctx, app)`
 
 ### FlagSet 元数据
 
@@ -1157,6 +1201,13 @@ app docs markdown ./site/docs
 
 - `App`
 - `Command`
+- `REPL`
+- `REPLConfig`
+- `Runtime`
+- `DefaultRuntime`
+- `CLIRuntime`
+- `REPLRuntime`
+- `AutoRuntime`
 - `Surface`
 - `CommandSurface`
 - `PositionalSurface`

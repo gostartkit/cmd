@@ -78,7 +78,7 @@ func (d *Dispatcher) dispatchBuiltin(ctx context.Context, invocation *Invocation
 	if !ok {
 		return d.App.fail(nil, ctx, invocation.RawArgs, nil, fmt.Errorf("%w, unknown builtin %q", ErrNotFound, invocation.Builtin), ErrorKindNotFound, 2)
 	}
-	if err := handler(d.App, invocation.Args); err != nil {
+	if err := handler(ctx, d.App, invocation.Args); err != nil {
 		return d.App.fail(nil, ctx, invocation.RawArgs, nil, err, ErrorKindInvalidArguments, 2)
 	}
 	return nil

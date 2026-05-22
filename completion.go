@@ -183,6 +183,8 @@ func (a *App) completeBuiltin(args []string, current string) ([]string, bool) {
 			return filterPrefix([]string{"markdown", "man"}, current), true
 		}
 		return nil, true
+	case "repl":
+		return nil, true
 	default:
 		return nil, false
 	}
@@ -294,6 +296,8 @@ func (a *App) completeBuiltinDetailed(args []string, current string) ([]Completi
 			values = filterPrefix([]string{"markdown", "man"}, current)
 		}
 		return completionResultsFromValues(values, completionKindValue), true
+	case "repl":
+		return nil, true
 	default:
 		return nil, false
 	}

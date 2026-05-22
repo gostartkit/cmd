@@ -918,6 +918,16 @@ func TestAppCompleteBuiltinArguments(t *testing.T) {
 	}
 }
 
+func TestAppCompleteRootIncludesREPLBuiltinWhenEnabled(t *testing.T) {
+	app := NewApp("test")
+	app.EnableREPL()
+
+	got := app.complete([]string{"re"})
+	if !slices.Equal(got, []string{"repl"}) {
+		t.Fatalf("expected repl builtin suggestion, got %v", got)
+	}
+}
+
 func TestAppCompleteCommandFlags(t *testing.T) {
 	app := NewApp("test")
 	app.Commands = []*Command{
@@ -1208,6 +1218,16 @@ func TestAppSpecCommandOutputsJSON(t *testing.T) {
 	}
 	if spec.Commands[0].Positionals[0].Extensions["x-label"] != "Target" {
 		t.Fatalf("expected positional extensions in spec, got %+v", spec.Commands[0].Positionals)
+	}
+}
+
+func TestSpecIncludesREPLBuiltinWhenEnabled(t *testing.T) {
+	app := NewApp("test")
+	app.EnableREPL()
+
+	spec := app.Spec()
+	if !slices.Equal(spec.Builtins, []string{"help", "completion", "spec", "docs", "repl"}) {
+		t.Fatalf("unexpected repl-enabled builtins in spec: %+v", spec.Builtins)
 	}
 }
 

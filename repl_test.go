@@ -5,10 +5,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 )
+
+type replDriverFunc func(ctx context.Context, repl *REPL) error
+
+func (fn replDriverFunc) Run(ctx context.Context, repl *REPL) error {
+	return fn(ctx, repl)
+}
 
 func TestSplitLine(t *testing.T) {
 	got, err := SplitLine("foo bar")
@@ -613,5 +620,343 @@ func TestREPLMultipleCommandsIsolation(t *testing.T) {
 	}
 	if !strings.Contains(output, "verbose=false name=tom") {
 		t.Fatalf("expected second command isolation output, got %q", output)
+	}
+}
+
+func TestREPLBuiltinUsesConfiguredDriver(t *testing.T) {
+	app := NewApp("test")
+	app.EnableREPL()
+
+	ran := false
+	app.ConfigureREPL(func(cfg *REPLConfig) {
+		cfg.Prompt = "test> "
+		cfg.Driver = replDriverFunc(func(ctx context.Context, repl *REPL) error {
+			ran = true
+			if repl.App != app {
+				t.Fatalf("expected repl app to match")
+			}
+			if repl.Prompt != "test> " {
+				t.Fatalf("expected configured prompt, got %q", repl.Prompt)
+			}
+			return nil
+		})
+	})
+
+	if err := app.Run(context.Background(), []string{"repl"}); err != nil && !errors.Is(err, io.EOF) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !ran {
+		t.Fatal("expected configured repl driver to run")
+	}
+}
+
+func TestCompletionReplaceStart(t *testing.T) {
+	tests := []struct {
+		name        string
+		line        string
+		cursor      int
+		wantStart   int
+		wantCurrent string
+	}{
+		{
+			name:        "plain token",
+			line:        "deploy pr",
+			cursor:      len([]rune("deploy pr")),
+			wantStart:   len([]rune("deploy ")),
+			wantCurrent: "pr",
+		},
+		{
+			name:        "quoted token",
+			line:        `deploy "pr`,
+			cursor:      len([]rune(`deploy "pr`)),
+			wantStart:   len([]rune(`deploy "`)),
+			wantCurrent: "pr",
+		},
+		{
+			name:        "trailing space",
+			line:        "deploy ",
+			cursor:      len([]rune("deploy ")),
+			wantStart:   len([]rune("deploy ")),
+			wantCurrent: "",
+		},
+		{
+			name:        "flag equals",
+			line:        "deploy --env=pr",
+			cursor:      len([]rune("deploy --env=pr")),
+			wantStart:   len([]rune("deploy ")),
+			wantCurrent: "--env=pr",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotStart, gotCurrent := completionReplaceStart([]rune(tt.line), tt.cursor)
+			if gotStart != tt.wantStart || gotCurrent != tt.wantCurrent {
+				t.Fatalf("expected start=%d current=%q, got start=%d current=%q", tt.wantStart, tt.wantCurrent, gotStart, gotCurrent)
+			}
+		})
+	}
+}
+
+func TestFormatCompletionHint(t *testing.T) {
+	tests := []struct {
+		name    string
+		results []CompletionResult
+		want    string
+	}{
+		{
+			name: "empty",
+			want: "",
+		},
+		{
+			name: "single with description",
+			results: []CompletionResult{
+				{Value: "--env", Description: "target environment", Kind: completionKindFlag},
+			},
+			want: "hint: --env - target environment",
+		},
+		{
+			name: "single without description",
+			results: []CompletionResult{
+				{Value: "deploy", Kind: completionKindCommand},
+			},
+			want: "hint: deploy",
+		},
+		{
+			name: "multiple",
+			results: []CompletionResult{
+				{Value: "deploy"},
+				{Value: "describe"},
+				{Value: "destroy"},
+				{Value: "docs"},
+			},
+			want: "hint: deploy, describe, destroy (+1 more)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatCompletionHint(tt.results); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestTerminalSessionCurrentHintUsesCompletionDetails(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{
+			Name:  "deploy",
+			Short: "deploy services",
+			SetFlags: func(f *FlagSet) {
+				var env string
+				f.StringVar(&env, "env", "", "target environment", "")
+			},
+		},
+	}
+
+	session := &replTerminalSession{
+		repl:   &REPL{App: app},
+		line:   []rune("dep"),
+		cursor: len([]rune("dep")),
+	}
+	if got := session.currentHint(); got != "hint: deploy - deploy services" {
+		t.Fatalf("unexpected command hint: %q", got)
+	}
+
+	session.line = []rune("deploy --e")
+	session.cursor = len([]rune("deploy --e"))
+	if got := session.currentHint(); got != "hint: --env - target environment" {
+		t.Fatalf("unexpected flag hint: %q", got)
+	}
+}
+
+func TestFormatCompletionGhostText(t *testing.T) {
+	tests := []struct {
+		name    string
+		line    string
+		cursor  int
+		results []CompletionResult
+		want    string
+	}{
+		{
+			name:   "empty",
+			line:   "dep",
+			cursor: len([]rune("dep")),
+			want:   "",
+		},
+		{
+			name:   "single suggestion",
+			line:   "dep",
+			cursor: len([]rune("dep")),
+			results: []CompletionResult{
+				{Value: "deploy", Description: "deploy services"},
+			},
+			want: ansiDim + "loy" + ansiReset,
+		},
+		{
+			name:   "common prefix from multiple suggestions",
+			line:   "de",
+			cursor: len([]rune("de")),
+			results: []CompletionResult{
+				{Value: "deploy"},
+				{Value: "describe"},
+				{Value: "destroy"},
+			},
+			want: "",
+		},
+		{
+			name:   "cursor not at end",
+			line:   "deploy",
+			cursor: len([]rune("dep")),
+			results: []CompletionResult{
+				{Value: "deploy"},
+			},
+			want: "",
+		},
+		{
+			name:   "trailing space",
+			line:   "deploy ",
+			cursor: len([]rune("deploy ")),
+			results: []CompletionResult{
+				{Value: "--env"},
+			},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatCompletionGhostText([]rune(tt.line), tt.cursor, tt.results); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestTerminalSessionCurrentGhostTextUsesCompletionDetails(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{
+			Name:  "deploy",
+			Short: "deploy services",
+			SetFlags: func(f *FlagSet) {
+				var env string
+				f.StringVar(&env, "env", "", "target environment", "")
+			},
+		},
+	}
+
+	session := &replTerminalSession{
+		repl:   &REPL{App: app},
+		line:   []rune("dep"),
+		cursor: len([]rune("dep")),
+	}
+	if got := session.currentGhostText(); got != ansiDim+"loy"+ansiReset {
+		t.Fatalf("unexpected command ghost text: %q", got)
+	}
+
+	session.line = []rune("deploy --e")
+	session.cursor = len([]rune("deploy --e"))
+	if got := session.currentGhostText(); got != ansiDim+"nv"+ansiReset {
+		t.Fatalf("unexpected flag ghost text: %q", got)
+	}
+}
+
+func TestFormatCompletionDisplayLine(t *testing.T) {
+	tests := []struct {
+		name   string
+		result CompletionResult
+		want   string
+	}{
+		{
+			name:   "command with description",
+			result: CompletionResult{Value: "deploy", Description: "deploy services", Kind: completionKindCommand},
+			want:   ansiBlue + "[cmd]" + ansiReset + " " + fmt.Sprintf("%-20s %s", "deploy", "deploy services"),
+		},
+		{
+			name:   "flag with description",
+			result: CompletionResult{Value: "--env", Description: "target environment", Kind: completionKindFlag},
+			want:   ansiGreen + "[flag]" + ansiReset + " " + fmt.Sprintf("%-20s %s", "--env", "target environment"),
+		},
+		{
+			name:   "value without description",
+			result: CompletionResult{Value: "prod", Kind: completionKindValue},
+			want:   ansiYellow + "[value]" + ansiReset + " prod",
+		},
+		{
+			name:   "positional without description",
+			result: CompletionResult{Value: "dev", Kind: completionKindPositional},
+			want:   ansiCyan + "[arg]" + ansiReset + " dev",
+		},
+		{
+			name:   "builtin without description",
+			result: CompletionResult{Value: "spec", Kind: completionKindBuiltin},
+			want:   ansiDim + "[builtin]" + ansiReset + " spec",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := formatCompletionDisplayLine(tt.result); got != tt.want {
+				t.Fatalf("expected %q, got %q", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestCompletionPageHelpers(t *testing.T) {
+	results := []CompletionResult{
+		{Value: "one"},
+		{Value: "two"},
+		{Value: "three"},
+		{Value: "four"},
+		{Value: "five"},
+	}
+
+	page0 := completionPage(results, 0, 2)
+	if got := []string{page0[0].Value, page0[1].Value}; !slices.Equal(got, []string{"one", "two"}) {
+		t.Fatalf("unexpected first page: %v", got)
+	}
+
+	page1 := completionPage(results, 1, 2)
+	if got := []string{page1[0].Value, page1[1].Value}; !slices.Equal(got, []string{"three", "four"}) {
+		t.Fatalf("unexpected second page: %v", got)
+	}
+
+	page2 := completionPage(results, 2, 2)
+	if got := []string{page2[0].Value}; !slices.Equal(got, []string{"five"}) {
+		t.Fatalf("unexpected third page: %v", got)
+	}
+
+	if got := completionPageCount(len(results), 2); got != 3 {
+		t.Fatalf("expected 3 pages, got %d", got)
+	}
+
+	wantFooter := ansiDim + "hint: showing 3-4 of 5 (page 2/3, Tab for more)" + ansiReset
+	if got := formatCompletionPageFooter(results, 1, 2); got != wantFooter {
+		t.Fatalf("expected %q, got %q", wantFooter, got)
+	}
+}
+
+func TestCompletionCycleAdvancesWithinSameContext(t *testing.T) {
+	session := &replTerminalSession{}
+	line := "dep"
+	cursor := len([]rune(line))
+
+	if got := session.nextCompletionPage(line, cursor, 20); got != 0 {
+		t.Fatalf("expected first page 0, got %d", got)
+	}
+	if got := session.nextCompletionPage(line, cursor, 20); got != 1 {
+		t.Fatalf("expected second page 1, got %d", got)
+	}
+	if got := session.nextCompletionPage(line, cursor, 20); got != 2 {
+		t.Fatalf("expected third page 2, got %d", got)
+	}
+
+	session.resetCompletionCycle()
+	if got := session.nextCompletionPage("deploy", len([]rune("deploy")), 20); got != 0 {
+		t.Fatalf("expected reset page 0, got %d", got)
 	}
 }

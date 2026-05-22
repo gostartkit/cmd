@@ -635,6 +635,34 @@ For an interactive loop:
 err := app.RunREPL(ctx, os.Stdin, os.Stdout)
 ```
 
+If you want to choose the runtime explicitly, use the shared runtime interface:
+
+```go
+err := app.RunWith(ctx, cmd.CLIRuntime{Args: os.Args[1:]})
+err = app.RunWith(ctx, cmd.REPLRuntime{In: os.Stdin, Out: os.Stdout})
+err = app.RunDefault(ctx, os.Args[1:])
+```
+
+For application entrypoints, you can also use the main-style helpers:
+
+```go
+app.RunAuto(ctx, os.Args[1:])
+app.MustRunDefault(ctx, os.Args[1:])
+cmd.Main(app)
+```
+
+If you want the same binary to expose REPL mode without adding your own command, enable the built-in REPL entry:
+
+```go
+app.EnableREPL()
+```
+
+Then users can enter REPL mode with:
+
+```bash
+app repl
+```
+
 Or configure the runtime directly:
 
 ```go
@@ -655,6 +683,8 @@ Built-in REPL commands are:
 - `.exit`
 - `.quit`
 - `.help`
+
+When stdin/stdout is a TTY, the default REPL driver also enables inline editing, history navigation, real-time context-aware hints, inline ghost text for the best completion, and `Tab` completion powered by the same command tree and value completion hooks used by CLI completion. Candidate lists are labeled by kind, so commands, flags, values, and positional arguments stay easy to distinguish, and repeated `Tab` presses page through longer candidate lists.
 
 Command errors are printed and the REPL keeps running. `context.Canceled` or input EOF exits the loop.
 
@@ -1109,10 +1139,22 @@ app docs markdown ./site/docs
 
 - `NewApp(name string) *App`
 - `(*App).Run(ctx, args)`
+- `(*App).RunWith(ctx, runtime)`
+- `(*App).RunAuto(ctx, args)`
+- `(*App).RunDefault(ctx, args)`
 - `(*App).RunLine(ctx, line)`
 - `(*App).RunREPL(ctx, in, out)`
+- `(*App).Main(ctx, runtime)`
+- `(*App).MainAuto(ctx, args)`
+- `(*App).MainDefault(ctx, args)`
+- `(*App).MustRun(ctx, runtime)`
+- `(*App).MustRunAuto(ctx, args)`
+- `(*App).MustRunDefault(ctx, args)`
+- `(*App).DefaultRuntime(args)`
 - `(*App).CompleteLine(line, cursor)`
 - `(*App).CompleteLineDetailed(line, cursor)`
+- `(*App).EnableREPL()`
+- `(*App).ConfigureREPL(fn)`
 - `(*App).EnableConfigSupport()`
 - `(*App).Use(...)`
 - `(*App).AddObserver(...)`
@@ -1127,6 +1169,8 @@ app docs markdown ./site/docs
 - `AddCommands(...)`
 - `SetUsageTemplate(...)`
 - `Execute()`
+- `Main(app)`
+- `MainWithContext(ctx, app)`
 
 ### FlagSet metadata helpers
 
@@ -1157,6 +1201,13 @@ app docs markdown ./site/docs
 
 - `App`
 - `Command`
+- `REPL`
+- `REPLConfig`
+- `Runtime`
+- `DefaultRuntime`
+- `CLIRuntime`
+- `REPLRuntime`
+- `AutoRuntime`
 - `Surface`
 - `CommandSurface`
 - `PositionalSurface`

@@ -778,7 +778,7 @@ func (a *App) builtinSpecsForCommands(commands Commands) []string {
 		return a.cachedBuiltinSpecs
 	}
 
-	builtins := builtinSpecsFor(commands)
+	builtins := appendBuiltinSpecsFor(nil, commands, a.replEnabled())
 	a.cachedBuiltinSpecs = builtins
 	a.cachedBuiltinSpecsSig = sig
 	a.cachedBuiltinSpecsOK = true
@@ -786,10 +786,10 @@ func (a *App) builtinSpecsForCommands(commands Commands) []string {
 }
 
 func builtinSpecsFor(commands Commands) []string {
-	return appendBuiltinSpecsFor(nil, commands)
+	return appendBuiltinSpecsFor(nil, commands, false)
 }
 
-func appendBuiltinSpecsFor(dst []string, commands Commands) []string {
+func appendBuiltinSpecsFor(dst []string, commands Commands, replEnabled bool) []string {
 	dst = append(dst, "help")
 	if commands.Search("completion") == nil {
 		dst = append(dst, "completion")
@@ -799,6 +799,9 @@ func appendBuiltinSpecsFor(dst []string, commands Commands) []string {
 	}
 	if commands.Search("docs") == nil {
 		dst = append(dst, "docs")
+	}
+	if replEnabled && commands.Search("repl") == nil {
+		dst = append(dst, "repl")
 	}
 	return dst
 }

@@ -1,14 +1,16 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"strings"
 )
 
-type BuiltinHandler func(app *App, args []string) error
+type BuiltinHandler func(ctx context.Context, app *App, args []string) error
 
 // Registry is a read-only index over the shared command tree.
 type Registry struct {
+	App      *App
 	Root     *Command
 	ByPath   map[string]*Command
 	Aliases  map[string]*Command
@@ -19,11 +21,12 @@ type Registry struct {
 }
 
 func (a *App) registry() *Registry {
-	return newRegistry(a.rootCommand())
+	return newRegistry(a, a.rootCommand())
 }
 
-func newRegistry(root *Command) *Registry {
+func newRegistry(app *App, root *Command) *Registry {
 	registry := &Registry{
+		App:              app,
 		Root:             root,
 		ByPath:           make(map[string]*Command),
 		Aliases:          make(map[string]*Command),
@@ -71,31 +74,39 @@ func (r *Registry) indexCommands(parent *Command, path []string, commands Comman
 }
 
 func (r *Registry) registerBuiltins(commands Commands) {
-	r.Builtins["help"] = func(app *App, args []string) error {
+	r.Builtins["help"] = func(_ context.Context, app *App, args []string) error {
 		return app.runHelpCommand(args)
 	}
 	r.visibleBuiltins = append(r.visibleBuiltins, "help")
 
 	if commands.Search("completion") == nil {
-		r.Builtins["completion"] = func(app *App, args []string) error {
+		r.Builtins["completion"] = func(_ context.Context, app *App, args []string) error {
 			return app.runCompletion(args)
 		}
 		r.visibleBuiltins = append(r.visibleBuiltins, "completion")
 	}
 	if commands.Search("spec") == nil {
-		r.Builtins["spec"] = func(app *App, args []string) error {
+		r.Builtins["spec"] = func(_ context.Context, app *App, args []string) error {
 			return app.runSpec(args)
 		}
 		r.visibleBuiltins = append(r.visibleBuiltins, "spec")
 	}
 	if commands.Search("docs") == nil {
-		r.Builtins["docs"] = func(app *App, args []string) error {
+		r.Builtins["docs"] = func(_ context.Context, app *App, args []string) error {
 			return app.runDocs(args)
 		}
 		r.visibleBuiltins = append(r.visibleBuiltins, "docs")
 	}
+	if r.App != nil && r.App.replEnabled() {
+		if commands.Search("repl") == nil {
+			r.Builtins["repl"] = func(ctx context.Context, app *App, args []string) error {
+				return app.runREPLBuiltin(ctx, args)
+			}
+			r.visibleBuiltins = append(r.visibleBuiltins, "repl")
+		}
+	}
 	if commands.Search("__complete") == nil {
-		r.Builtins["__complete"] = func(app *App, args []string) error {
+		r.Builtins["__complete"] = func(_ context.Context, app *App, args []string) error {
 			return app.runComplete(args)
 		}
 	}
@@ -167,7 +178,7 @@ func findCommand(app *App, parent *Command, cmds Commands, args []string) (*Comm
 
 	switch {
 	case parent != nil:
-		registry := newRegistry(&Command{SubCommands: parent.SubCommands})
+		registry := newRegistry(nil, &Command{SubCommands: parent.SubCommands})
 		path, cmd, remaining, err := registry.ResolveCommand(args)
 		if err != nil {
 			return nil, nil, err
@@ -186,7 +197,7 @@ func findCommand(app *App, parent *Command, cmds Commands, args []string) (*Comm
 		}
 		return cmd, remaining, nil
 	default:
-		registry := newRegistry(&Command{SubCommands: cmds})
+		registry := newRegistry(nil, &Command{SubCommands: cmds})
 		path, cmd, remaining, err := registry.ResolveCommand(args)
 		if err != nil {
 			return nil, nil, err
