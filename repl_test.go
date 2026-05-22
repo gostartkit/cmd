@@ -1058,6 +1058,51 @@ func TestTerminalSessionCurrentGhostTextUsesCompletionDetails(t *testing.T) {
 	}
 }
 
+func TestTerminalSessionRenderStartsHintAtLineStart(t *testing.T) {
+	app := NewApp("test")
+	app.Commands = []*Command{
+		{
+			Name:  "deploy",
+			Short: "deploy services",
+		},
+	}
+
+	tmp, err := os.CreateTemp(t.TempDir(), "render-out")
+	if err != nil {
+		t.Fatalf("create temp file: %v", err)
+	}
+	defer tmp.Close()
+
+	session := &replTerminalSession{
+		repl: &REPL{
+			App: app,
+			Prompt: "cmd> ",
+		},
+		ctx:    context.Background(),
+		out:    tmp,
+		line:   []rune("dep"),
+		cursor: len([]rune("dep")),
+	}
+
+	if err := session.render(); err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	if _, err := tmp.Seek(0, 0); err != nil {
+		t.Fatalf("seek temp file: %v", err)
+	}
+
+	gotBytes, err := io.ReadAll(tmp)
+	if err != nil {
+		t.Fatalf("read temp file: %v", err)
+	}
+
+	got := string(gotBytes)
+	want := "\r\033[2Kcmd> dep" + ansiDim + "loy" + ansiReset + "\n\r\033[2Khint: deploy - deploy services\033[1A\r\033[8C"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestFormatCompletionDisplayLine(t *testing.T) {
 	tests := []struct {
 		name   string
